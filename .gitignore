@@ -1,0 +1,5 @@
+.vscode/
+.emmyrc.json
+*.blend1
+release.zip
+/tmp/

@@ -1,0 +1,6 @@
+name=Anim Forge
+id=AnimForge
+author=AlexVDefi
+modversion=0.1.0
+description=In-game animation editor for Project Zomboid. Pose bones live, retime reload attachment markers, and export/bake custom weapon reload animations (with the pz-anim-forge tooling). Press the "Toggle Anim Forge" key (default Home) to open. Runs standalone; when the AgentBridge test mod is also loaded it additionally exposes headless ops so an agent/MCP can drive the editor.
+category=Misc
