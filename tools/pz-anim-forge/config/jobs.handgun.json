@@ -1,0 +1,23 @@
+{
+  "name": "handgun_hand_offset_v1",
+  "source_anims_dir": "media/anims_X/Bob",
+  "delta": {
+    "bone": "Bip01_R_Hand",
+    "rotation_euler_deg": [0.0, 4.0, -2.0],
+    "rotation_order": "XYZ",
+    "mode": "post"
+  },
+  "protected_bones": ["Dummy01", "Translation_Data"],
+  "clips": [
+    { "src": "Bob_IdleHandgun.x",          "clip": "Bob_IdleHandgun" },
+    { "src": "Bob_IdleAimHandgun.x",       "clip": "Bob_IdleAimHandgun" },
+    { "src": "Bob_IdleAimHandgun_Up45.x",  "clip": "Bob_IdleAimHandgun_Up45" },
+    { "src": "Bob_IdleAimHandgun_Up75.x",  "clip": "Bob_IdleAimHandgun_Up75" },
+    { "src": "Bob_IdleAimHandgun_Down.x",  "clip": "Bob_IdleAimHandgun_Down" },
+    { "src": "Bob_IdleAimHandgun_Down75.x","clip": "Bob_IdleAimHandgun_Down75" }
+  ],
+  "output": {
+    "mod_root": "C:/dev/ZomboidDecompiler/tools/pz-anim-forge/work/MyGunMod_example",
+    "anims_subdir": "common/media/anims_X/Bob"
+  }
+}

@@ -6,3 +6,6 @@
 *.fbx binary
 *.x    binary
 *.blend binary
+*.class binary
+*.ps1 text eol=crlf
+*.bat text eol=crlf

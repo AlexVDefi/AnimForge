@@ -3,3 +3,18 @@
 *.blend1
 release.zip
 /tmp/
+
+# Python tool scratch
+__pycache__/
+*.pyc
+tools/pz-anim-forge/work/
+tools/pz-anim-forge/vendor/
+
+# Java patch: machine-specific install record (dist/ IS committed - see java/README.md)
+java/installed-manifest.json
+
+# Local-only dev files, never published. The AgentBridge dev integration lives in the (private)
+# AgentBridge mod, not here; but if you ever drop a local hook directly in this mod, name it
+# *.local.lua - Project Zomboid still loads it in-game, and git will not track it.
+*.local.lua
+/dev-local/

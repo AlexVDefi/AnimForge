@@ -2,7 +2,7 @@
 -- A project bundles a weapon category's grip checklist with the per-clip edits
 -- (keyframes) and a per-clip "done" flag, so a custom gun's whole animation set
 -- can be saved, reloaded, and tracked to completion. Stored on disk under
--- ~/Zomboid/Lua/AgentBridge/anim_projects/ so projects survive Core.ResetLua.
+-- ~/Zomboid/Lua/AnimForge/anim_projects/ so projects survive Core.ResetLua.
 -- Kahlua exposes no directory enumeration, so an index.json lists the projects
 -- (slug -> summary) while each project's heavy keyframe data lives in its own
 -- <slug>.json. Client-only dev tool: no world/inventory state, nothing to sync.
@@ -26,7 +26,7 @@ AnimForge.AnimProjects = AnimForge.AnimProjects or {}
 local P = AnimForge.AnimProjects
 local JSON = AnimForge.JSON
 
-local DIR = "AgentBridge/anim_projects/"
+local DIR = "AnimForge/anim_projects/"
 local INDEX = DIR .. "index.json"
 
 --- Turn a display name into a filesystem-safe slug (lowercase alphanumerics, runs
