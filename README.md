@@ -181,3 +181,19 @@ byte-for-byte the way the game loads a vanilla clip — no coordinate-convention
 the AnimSet XML + Lua that makes a specific gun use them. The engine patch is three of the game's own
 classes with a handful of additive methods, loaded as loose classes that shadow the jar. Nothing is
 overwritten in place and every step is reversible.
+
+---
+
+## License
+
+Anim Forge's own code is released under the **MIT License** (see [LICENSE](LICENSE)) — that covers the
+in-game mod (`42/`), the `pz-anim-forge` tool (`tools/`), the setup/build/install scripts, the docs, and
+the additive patch logic authored for this project.
+
+**Exception — the bundled engine patch (`java/dist/*.class`).** Those prebuilt class files are compiled
+from Project Zomboid's own engine classes with Anim Forge's additive methods layered on top, so they are
+a derivative work of Project Zomboid (© The Indie Stone Ltd). They are **not** covered by the MIT license
+above and remain the property of The Indie Stone. They are bundled solely to patch a legally-owned copy
+of the game, in keeping with Project Zomboid's modding policy, and should not be redistributed outside
+that modding context. The decompiled Java *sources* are not included in this repository for the same
+reason; rebuild them from your own copy of the game (see [java/README.md](java/README.md)).
