@@ -37,7 +37,8 @@ baking tool are all included in this one package.
 - **Python 3** on your PATH — only for the baking tool and the mod-discovery scanner (not for the
   editor UI itself).
 - A **JDK 21+** — only if you ever need to *rebuild* the engine patch after a game update (a prebuilt
-  patch is included, so you do not need a JDK for normal use).
+  patch is included, so you do not need a JDK for normal use; rebuilding also needs the decompiled game
+  classes, which are not redistributed — see [java/README.md](java/README.md)).
 
 ---
 
@@ -167,7 +168,7 @@ appear when SWMG is installed alongside your gun mod.
   mod.info
   media/lua/client/AnimForge/   the editor (AnimEditor, AnimProjects, AnimCategories, theme, widgets)
   media/lua/shared/AnimForge/   JSON helper
-java/                   the engine patch: sources, prebuilt classes, build/install/uninstall scripts
+java/                   the engine patch: prebuilt classes + build/install/uninstall scripts (decompiled sources not redistributed)
 tools/pz-anim-forge/    the command-line baking tool + the mod-discovery scanner + the live watcher
 Setup.ps1               one-shot: junction the mod, install the patch, run the scan
 ```

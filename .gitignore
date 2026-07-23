@@ -13,6 +13,10 @@ tools/pz-anim-forge/vendor/
 # Java patch: machine-specific install record (dist/ IS committed - see java/README.md)
 java/installed-manifest.json
 
+# Decompiled game sources are The Indie Stone's copyright - kept locally to rebuild the patch, never
+# published. Only the prebuilt dist/ .class shadow files ship.
+java/src/
+
 # packaged distribution archives
 /dist/
 

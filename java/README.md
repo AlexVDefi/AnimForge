@@ -37,7 +37,13 @@ To revert to the stock game:
 ## Rebuild from source (only if the game updated)
 
 A game update can change these engine classes, which makes the prebuilt `dist/` stale. If the editor's
-live posing or browser thumbnails stop working after an update, rebuild:
+live posing or browser thumbnails stop working after an update, the classes need rebuilding.
+
+The patched **sources are not redistributed** — they are the game's own decompiled classes, which are
+The Indie Stone's copyright. To rebuild, supply your own: decompile the three classes above from your
+`projectzomboid.jar`, re-apply the additive blocks (they are small and self-contained — the
+AnimationPlayer / UI3DModel additions and LuaManager's single exposure line), drop the results under
+`src\`, then:
 
 ```powershell
 .\build.ps1      # compiles src\ against your projectzomboid.jar -> dist\
@@ -62,8 +68,8 @@ bundled Java 21-25 runtime). It finds `javac` via `JAVA_HOME` or a scan of commo
 ## Files
 
 ```
-src/     the three patched engine sources
-dist/    prebuilt .class files (committed; regenerate with build.ps1)
+dist/    prebuilt .class files (committed; this is what install.ps1 uses)
+src/     the three patched engine sources - NOT redistributed (game copyright); supply your own to rebuild
 build.ps1        compile src -> dist
 install.ps1      copy dist into the game install (auto-detected)
 uninstall.ps1    remove them again
