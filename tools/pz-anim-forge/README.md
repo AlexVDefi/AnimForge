@@ -11,7 +11,7 @@ buttons (via the watcher below), but every command also runs by hand.
 ## The key idea: keep it as `.x`
 
 PZ loads a `.x` animation through the engine's native `loadX` path, which applies only
-`MAKE_LEFT_HANDED` — not the coordinate convention the `.glb`/`.fbx` paths bake in (a 0.01 scale plus
+`MAKE_LEFT_HANDED` - not the coordinate convention the `.glb`/`.fbx` paths bake in (a 0.01 scale plus
 a -90 degree X bone rotation). So if you keep an animation as `.x` and edit only a bone's rotation
 keyframes, the engine loads your file byte-for-byte the way it loads the vanilla clip, plus your
 nudge. No round-trip through glb, no orientation drift, nothing to compensate for. This is what makes
@@ -118,7 +118,7 @@ Run `python cli.py -h` for the full list.
 ## Two ways to ship an edit
 
 - **Override (simplest).** Output a `.x` under the SAME name as the vanilla clip (omit the rename).
-  The mod file replaces vanilla globally for that animation — no AnimSet XML needed.
+  The mod file replaces vanilla globally for that animation - no AnimSet XML needed.
 - **Per-gun.** Output under a NEW name (`bake-set` + `wire-set`) so only your gun uses it. The tool
   renames the AnimationSet, clones the gating nodes, and emits the Lua that flips the anim variable
   while the gun is held.

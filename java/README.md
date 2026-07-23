@@ -39,9 +39,9 @@ To revert to the stock game:
 A game update can change these engine classes, which makes the prebuilt `dist/` stale. If the editor's
 live posing or browser thumbnails stop working after an update, the classes need rebuilding.
 
-The patched **sources are not redistributed** — they are the game's own decompiled classes, which are
+The patched **sources are not redistributed** - they are the game's own decompiled classes, which are
 The Indie Stone's copyright. To rebuild, supply your own: decompile the three classes above from your
-`projectzomboid.jar`, re-apply the additive blocks (they are small and self-contained — the
+`projectzomboid.jar`, re-apply the additive blocks (they are small and self-contained - the
 AnimationPlayer / UI3DModel additions and LuaManager's single exposure line), drop the results under
 `src\`, then:
 
