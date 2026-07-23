@@ -1,6 +1,6 @@
 -- In-game animation editor for Project Zomboid. Entry point: pulls in the editor modules
 -- (core state, pose panel, reload editor, overlay, browser, hub, headless ops) and wires the
--- "Toggle Anim Forge" keybind (default HOME) to open/close the hub.
+-- "Toggle Anim Forge" keybind (default DELETE) to open/close the hub.
 require "AnimForge/AnimEditorCore"
 require "AnimForge/AnimEditorPanel"
 require "AnimForge/AnimEditorReloadFx"
@@ -13,14 +13,14 @@ local closePanel = AnimForge.Hub.closePanel
 local openPanel = AnimForge.Hub.openPanel
 local AE = AnimForge.AnimEdit
 
--- Rebindable keybind (Options > Key Bindings > Anim Forge). Default HOME.
+-- Rebindable keybind (Options > Key Bindings > Anim Forge). Default DELETE.
 local KEYBIND = "Toggle Anim Forge"
 local function registerKeybind()
     for _, kb in ipairs(keyBinding) do
         if kb.value == KEYBIND then return end   -- already registered (reload-safe)
     end
     table.insert(keyBinding, { value = "[Anim Forge]" })
-    table.insert(keyBinding, { value = KEYBIND, key = Keyboard.KEY_HOME })
+    table.insert(keyBinding, { value = KEYBIND, key = Keyboard.KEY_DELETE })
 end
 registerKeybind()
 

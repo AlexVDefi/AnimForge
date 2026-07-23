@@ -7,7 +7,7 @@ animations into game-ready files - all from inside the game.
 Anim Forge is fully standalone: the in-game mod, the engine patch it needs, and the command-line
 baking tool are all included in this one package.
 
-- **Open it in-game** with the **Toggle Anim Forge** keybind (default **Home**), rebindable under
+- **Open it in-game** with the **Toggle Anim Forge** keybind (default **Delete**), rebindable under
   Options > Key Bindings.
 
 ---
@@ -92,7 +92,7 @@ This only reads your mods and writes two small JSON files into the editor's chan
 ## Using the editor
 
 1. Load a save (the editor works on your in-world character).
-2. Press **Home** to open Anim Forge.
+2. Press **Delete** to open Anim Forge.
 3. **Browse…** to pick a clip, or use the weapon/clip controls; the character freezes on it.
 4. Click a bone node on the character (or pick from the panel) and drag the gizmo to pose it. **R**
    toggles rotate/translate handles; **Space** plays/pauses the clip.

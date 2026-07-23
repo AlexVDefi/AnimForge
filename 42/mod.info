@@ -2,5 +2,5 @@ name=Anim Forge
 id=AnimForge
 author=AlexVDefi
 modversion=0.1.0
-description=In-game animation editor for Project Zomboid Build 42. Pose character bones live with on-screen gizmos, retime the attachment markers on weapon reload animations, and export/bake custom animations with the bundled pz-anim-forge tool. Requires the one-time Anim Forge engine patch (run the install script in the mod's java folder). Press the "Toggle Anim Forge" key (default Home) to open.
+description=In-game animation editor for Project Zomboid Build 42. Pose character bones live with on-screen gizmos, retime the attachment markers on weapon reload animations, and export/bake custom animations with the bundled pz-anim-forge tool. Requires the one-time Anim Forge engine patch (run the install script in the mod's java folder). Press the "Toggle Anim Forge" key (default Delete) to open.
 category=Misc
