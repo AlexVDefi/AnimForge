@@ -200,13 +200,24 @@ function StatusToast:set(text, kind, ttl)
     self.until_ = getTimestampMs() + (ttl or 4) * 1000
 end
 
--- Draw on element `e` at (x, y). Fades out over the final 800ms.
-function StatusToast:render(e, x, y)
+-- Draw on element `e` at (x, y). Fades out over the final 800ms. `maxWidth` (optional) clips the line
+-- with an ellipsis so a long status never runs under the footer buttons sitting to its right.
+function StatusToast:render(e, x, y, maxWidth)
     if self.text == "" then return end
     local left = self.until_ - getTimestampMs()
     if left <= 0 then self.text = ""; return end
     local a = left < 800 and (left / 800) or 1
-    T.text(e, self.text, x, y, { self.color[1], self.color[2], self.color[3], a }, T.font.body)
+    local txt = self.text
+    if maxWidth and maxWidth > 0 then
+        local tm = getTextManager()
+        if tm:MeasureStringX(T.font.body, txt) > maxWidth then
+            while #txt > 1 and tm:MeasureStringX(T.font.body, txt .. "...") > maxWidth do
+                txt = txt:sub(1, #txt - 1)
+            end
+            txt = txt .. "..."
+        end
+    end
+    T.text(e, txt, x, y, { self.color[1], self.color[2], self.color[3], a }, T.font.body)
 end
 
 return true

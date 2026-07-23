@@ -68,7 +68,7 @@ local MODES = {
     reload    = { label = "New reload",         group = "Create", pose = false,
                   purpose = "Build a Gunworks reload (load / rack / unload stages).",
                   how = "Name the set + archetype + mod and Create; then per stage pick its animation (vanilla or a custom clip your mod loaded), tweak the pose + duration, and fill the gun config.",
-                  whenDone = "Add the gun fullType, then Export reload pack -> mod." },
+                  whenDone = "Add the gun fullType, then Export reload pack -> mod. With the watcher running it builds + goes live instantly - open Reload attachments to tune it." },
     emote     = { label = "Pose / emote",       group = "Create", pose = true,
                   purpose = "Pose for a screenshot, or export it as a 1-frame emote.",
                   how = "Name it, pick a base idle + mod, pose the body, then Export emote.",
@@ -90,7 +90,7 @@ local MODES = {
     reloadfx  = { label = "Edit reload attachments", navLabel = "Reload attachments", group = "Quick", pose = false,
                   purpose = "Retune WHEN a gun's reload props/parts appear (cartridge, ball, ramrod).",
                   how = "Pick a mod reload below; drag the timeline markers while the reload plays - the character shows each attachment live.",
-                  whenDone = "Save to mod, run the Anim Forge watcher, then reboot to see it in a real reload." },
+                  whenDone = "Save to mod - with the Anim Forge watcher running the retimed markers go live instantly, no reboot needed." },
     testrig   = { label = "Equipment", navLabel = "Equipment", group = "Quick", pose = false,
                   purpose = "Equip a gun from your mod + toggle its attachments on the player.",
                   how = "Pick a weapon and Equip; tick attachments to fit. The gun stays equipped while you pose in any mode.",
@@ -520,6 +520,23 @@ function AnimForgeWindow:buildReloadScreen(x, y, w)
         sy = sy + 26
     end
 
+    -- Clean base clips + Edit attachments, side by side under the stage rows.
+    -- Clean base: bake despiked shared copies of the stock reload clips into the mod and set them as the
+    -- stage base clips, so the pose preview + the shipped reload use a jitter-free base (the off-hand prop
+    -- stops jumping on the vanilla spike keyframes). Auto-runs for magazine reloads.
+    self.rCleanBase = post(self:mkButton(x, sy + 2, hw, 22, "Clean base clips",
+        AnimForgeWindow.onReloadCleanBase, T.styleGhost,
+        "Bake despiked copies of the stock reload clips into the mod + use them as the base, so the "
+        .. "off-hand prop follows the hand without the vanilla spike jitter. Idempotent; auto-runs for "
+        .. "magazine reloads."))
+    -- Edit attachments: open the Reload Attachments editor bound to THIS project (shared markers), so
+    -- retimed mag/prop gun<->hand markers show up per stage here and survive a reopen.
+    self.rEditAttach = post(self:mkButton(x2, sy + 2, hw, 22, "Edit attachments",
+        AnimForgeWindow.onReloadEditAttachments, T.styleGhost,
+        "Open the Reload Attachments editor for this reload (retime the mag / prop gun<->hand markers). "
+        .. "It shares this reload's markers, so edits show in the per-stage counts above. Export first."))
+    sy = sy + 30
+
     -- ---- config grid (post-create), single column: each field full width ----
     local cy = sy + 8
     -- Guns: searchable, icon-rendering picker (replaces the free-text fullType field). Multi-select.
@@ -567,11 +584,11 @@ function AnimForgeWindow:buildReloadScreen(x, y, w)
     -- attachment style shows this instead - updateReloadStyleFields toggles which is visible). Fine-tune
     -- the seeded timings later in 'Reload attachments'.
     local vmy = cy2 + 4 * 26
-    self.rVisualMag = ISTickBox:new(x, vmy, 18, 18, "", self, nil)
+    self.rVisualMag = ISTickBox:new(x, vmy, 18, 18, "", self, AnimForgeWindow.onVisualMagToggle)
     self.rVisualMag:initialise(); self.content:addChild(self.rVisualMag); self.rVisualMag:setVisible(false)
     self.rVisualMag:addOption("visual mag reload (mag moves gun <-> hand)")
     self.rVisualMag:setSelected(1, AE.gw.config.visualMag == true)
-    self.rVisualMag.tooltip = "Seed markers so the magazine visibly detaches to the hand + re-attaches, at default timings. Uses the off-hand prop item as the mag. Fine-tune the timing later in 'Reload attachments'."
+    self.rVisualMag.tooltip = "Seed markers so the magazine visibly detaches to the hand + re-attaches, at default timings. Uses the off-hand prop item as the mag. Fine-tune the timing later in 'Reload attachments'. Position the mag by posing Bip01_Prop2 in the pose editor."
     post(self.rVisualMag)
 
     -- Back button lives in the band above the embedded pose editor (only shown while
@@ -680,6 +697,17 @@ function AnimForgeWindow:drawHeaderExtras(s)
     local px = bw - pw - T.sp.s
     T.fill(s, px, T.sp.xs, pw, 16, c)
     T.text(s, label, px + 8, T.sp.xs, T.col.accentText, fnt)
+    -- Persistent restart-needed badge (left of the auto-bake pill): a build this session wrote brand-new
+    -- reload nodes that only enter the engine's boot file map on a restart. Clears itself on reboot (this
+    -- Lua state is recreated), which is exactly when the nodes become loadable.
+    if AE.restartPending then
+        local rl = "Restart to load new reload"
+        local rtw = getTextManager():MeasureStringX(fnt, rl)
+        local rpw = rtw + 16
+        local rpx = px - rpw - T.sp.xs
+        T.fill(s, rpx, T.sp.xs, rpw, 16, T.col.danger)
+        T.text(s, rl, rpx + 8, T.sp.xs, T.col.accentText, fnt)
+    end
     if self.mode == "grip" and AE.project then
         local done, edited, total = projectProgress()
         local txt = done .. "/" .. total .. " done" .. (edited > done and ("  +" .. (edited - done) .. " edited") or "")
@@ -708,6 +736,7 @@ end
 
 function AnimForgeWindow:switchMode(key)
     self:hideAll()
+    pcall(function() AnimForge.EditCore.rfxEndPosePreview() end)   -- restore gun/props if leaving a reload pose
     self.mode = key
     AE.forgeMode = key
     self.reloadEditing = nil
@@ -771,10 +800,17 @@ function AnimForgeWindow:configFooter()
     elseif key == "override" then prim = "Save .x (overwrite)"
     elseif key == "duplicate" then prim = "Duplicate & open"
     elseif key == "reload" then
-        -- Export only after the set is created (and not while posing a stage).
-        if not self.reloadEditing and AE.project and AE.project.type == "gunworks" then
-            prim = "Export reload pack -> mod"
+        -- Save only after the set is created. Shown while posing too, so one button always saves.
+        if AE.project and AE.project.type == "gunworks" then
+            prim = "Save changes"
         end
+    end
+    if key == "reload" then
+        self.primaryBtn.tooltip = "Save everything you changed in this reload - bone poses AND attachment "
+            .. "markers - and bake it into the mod. One button; it pulls in your current pose and any open "
+            .. "attachments edits, so you never have to pick which save."
+    else
+        self.primaryBtn.tooltip = nil
     end
     if prim then self.primaryBtn:setTitle(prim); self.primaryBtn:setVisible(true) else self.primaryBtn:setVisible(false) end
     if sec then self.secondaryBtn:setTitle(sec); self.secondaryBtn:setVisible(true) else self.secondaryBtn:setVisible(false) end
@@ -843,12 +879,30 @@ function AnimForgeWindow:onReloadCreate()
     local slug = AP.save(proj)
     AE.project = { name = name, slug = slug, weapon = AE.gw.archetypeKey, type = "gunworks" }
     self:refreshReload()
+    -- Magazine reloads jitter the off-hand prop on the vanilla base's spike keyframes; bake clean base
+    -- clips up front (silent, no-op without a watcher) so the preview + reload are smooth from the start.
+    if AE.gw.archetype == "magazine" then self:bakeCleanBase(true) end
     self.toast:set("Created set '" .. name .. "'. Edit each stage + config, then Export.", "ok")
 end
 
 -- The gun picker toggled a weapon; keep config.fullTypes in sync with the current selection.
 function AnimForgeWindow:onReloadGunPicked(fullType, isSelected)
     AE.gw.config.fullTypes = table.concat(self.rGunPicker:getSelectedList(), ", ")
+end
+
+-- Visual-mag checkbox toggled: seed the default mag markers (when turned on and none exist yet) or
+-- strip them (when turned off), persist, and refresh the per-stage counts. This is the deliberate seed
+-- action now that export no longer re-derives markers - so toggling it never clobbers retimed markers.
+function AnimForgeWindow:onVisualMagToggle(optionIndex, selected)
+    self:syncReloadConfig()      -- pull the new checkbox state (+ rest of the form) into cfg
+    GW.applyVisualMag()          -- seed-if-empty when on; strip when off
+    if AE.project and AE.project.type == "gunworks" then
+        local savedActive = AE.gw.activeStage   -- persist without wiping pose deltas (stale AE.deltas)
+        if not self.reloadEditing then AE.gw.activeStage = nil end
+        AP.save(GW.buildProject(AE.project.name))
+        AE.gw.activeStage = savedActive
+    end
+    self:refreshReload()
 end
 
 -- Sprite fields (rows 4-5) and the visual-mag controls share the same rows, mutually exclusive:
@@ -915,7 +969,10 @@ function AnimForgeWindow:refreshReload()
             row.dur:setVisible(on); row.edit:setVisible(on)
             if key then
                 local s = AE.gw.stages[key] or {}
-                row.label:setName(key)
+                -- per-stage attachment-marker count: reflects edits made in the Reload Attachments
+                -- editor (the markers live in this same project), so the two surfaces stay visibly in sync.
+                local nmk = (s.markers and #s.markers) or 0
+                row.label:setName(key .. (nmk > 0 and ("  (" .. nmk .. " mk)") or ""))
                 self:populateStageClipCombo(row.clip, s.baseClip)
                 row.clip.stageKey = key
                 row.dur:setText(s.duration and tostring(s.duration) or "")
@@ -997,6 +1054,7 @@ end
 
 function AnimForgeWindow:onReloadBack()
     GW.captureActiveStage()
+    pcall(function() AnimForge.EditCore.rfxEndPosePreview() end)   -- clear the stage's previewed props
     self.reloadEditing = nil
     self:refreshReload()
 end
@@ -1115,7 +1173,7 @@ function AnimForgeWindow:onPrimary()
     elseif key == "duplicate" then
         self:doDuplicate()
     elseif key == "reload" then
-        self:exportReload()
+        self:saveChanges()
     end
 end
 
@@ -1162,6 +1220,18 @@ function AnimForgeWindow:exportEmote()
     self.toast:set("Wrote emote '" .. nm .. "' -> " .. mod .. ". Run 'pz-anim-forge wire-emote' to build.", "ok")
 end
 
+-- The ONE save for the reload editor. Pull any in-progress edits from BOTH surfaces into the project -
+-- the active pose (if you're posing a stage) and the attachment markers (if the Reload Attachments
+-- window is open) - then bake the whole pack (clips with poses + nodes with markers + registration Lua).
+-- So it never matters what you changed or which window you're in: this saves it.
+function AnimForgeWindow:saveChanges()
+    if self.reloadEditing then GW.captureActiveStage() end
+    if AE.rfx.window and AE.rfx.window.captureMarkersToProject then
+        AE.rfx.window:captureMarkersToProject()
+    end
+    self:exportReload()
+end
+
 function AnimForgeWindow:exportReload()
     self:syncReloadConfig()
     local c = AE.gw.config
@@ -1173,17 +1243,257 @@ function AnimForgeWindow:exportReload()
             self.toast:set("Stage '" .. key .. "' has no base clip. Seed an archetype.", "danger"); return
         end
     end
-    GW.applyVisualMag()
-    GW.captureActiveStage(); GW.saveJson()
+    -- NB: no applyVisualMag here. The project owns the markers now, so export bakes exactly what is in
+    -- stages[].markers (including any timing you dialed in the Reload Attachments editor). Seeding the
+    -- default mag markers is a deliberate act (create, or the visual-mag checkbox) - never a side effect
+    -- of export, which used to reset your retimed markers to defaults.
+    GW.captureActiveStage()
+    local ts = getTimestampMs()
+    GW.saveJson(ts)
     local name = c.animId ~= "" and c.animId or "gunworks"
     local slug = AP.save(GW.buildProject(name))
     AE.project = { name = name, slug = slug, weapon = AE.gw.archetypeKey, type = "gunworks" }
+    local nReg = GW.registerLive()   -- live-register now so the reload animates without a restart
     self:pollWatcher()
     if self.watcherLive then
-        self.toast:set("Exported reload '" .. name .. "' -> " .. c.mod .. ". Auto-baking now (watcher live).", "ok")
+        self.gwBuildTs = ts          -- prerender polls gw_build_result.json for THIS build finishing
+        self.gwBuildPoll = 0
+        self.gwBuildTries = 0
+        local regTxt = nReg > 0 and (" (registered " .. nReg .. (nReg == 1 and " gun" or " guns") .. ")") or ""
+        self.toast:set("Exported reload '" .. name .. "' -> " .. c.mod .. ". Building + going live"
+            .. regTxt .. "...", "ok")
     else
         self.toast:set("Exported reload '" .. name .. "' -> " .. c.mod
             .. ". No watcher running - start the auto-baker or run wire-gunworks to build.", "edited")
+    end
+end
+
+-- After "Export reload pack" the watcher builds the pack, refreshes the picker cache, and nudges the
+-- engine; it publishes gw_build_result.json keyed by the export ts. Poll for it, then refresh the
+-- reloadfx picker so the new reload appears in "Reload attachments" with no restart. Gives up after a
+-- few seconds so a missing watcher never leaves the poll spinning.
+function AnimForgeWindow:pollGwBuild()
+    if not self.gwBuildTs then return end
+    self.gwBuildPoll = (self.gwBuildPoll or 0) + 1
+    if self.gwBuildPoll < 15 then return end
+    self.gwBuildPoll = 0
+    self.gwBuildTries = (self.gwBuildTries or 0) + 1
+    local ok, r = pcall(readJsonFile, "AnimForge/gw_build_result.json")
+    if ok and r and r.ts == self.gwBuildTs then
+        self.gwBuildTs = nil
+        if r.ok then
+            loadReloadsFromCache()   -- pull the freshly baked node into the reloadfx picker cache
+            if self.mode == "reloadfx" then self:refreshReloadFx() end
+            -- Hot-reload each re-baked clip's MOTION into the live model (PZ's own anims file-watcher
+            -- never fires for mod dirs), so a re-exported reload plays its real motion with no restart.
+            -- Uses the Anim Forge AnimationPlayer patch; silently no-ops (restart still works) if absent.
+            local p = getPlayer()
+            local ap = p and p:getAnimationPlayer()
+            if ap and ap.reloadEditAnimClip and type(r.clips) == "table" then
+                for i = 1, #r.clips do
+                    pcall(function() ap:reloadEditAnimClip(r.clips[i]) end)
+                end
+            end
+            -- Restart is genuinely needed when this build wrote NODE files that were not present at the
+            -- last boot (never entered the engine's activeFileMap, so they cannot hot-load). The Python
+            -- build reports those as newNodes; we also remember any animId flagged this session, because a
+            -- re-export of the same new set (file now exists on disk) would otherwise look loadable. That
+            -- per-session table lives only in this Lua state, which resets on the very restart it asks for.
+            local aid = r.animId or "?"
+            local newCount = (type(r.newNodes) == "table") and #r.newNodes or 0
+            AE.exportedNew = AE.exportedNew or {}
+            local needsRestart = newCount > 0 or AE.exportedNew[aid] or (not r.liveReload)
+            if needsRestart then
+                AE.exportedNew[aid] = true
+                AE.restartPending = true
+                self.toast:set("Built '" .. tostring(r.animId) .. "' - RESTART the game to load its new "
+                    .. "animation nodes (they weren't reserved at boot). Tip: name a set to match a "
+                    .. "preseeded stub to skip this.", "edited", 9)
+            else
+                self.toast:set("Built '" .. tostring(r.animId) .. "' - live, no restart. Open "
+                    .. "'Reload attachments' to tune the timing.", "ok")
+            end
+        else
+            self.toast:set("Reload build failed: " .. tostring(r.error or "see the watcher log") .. ".", "danger")
+        end
+    elseif self.gwBuildTries >= 30 then
+        self.gwBuildTs = nil   -- ~7s with no matching result: assume the watcher is down, stop waiting
+    end
+end
+
+-- ---- clean base clips (despike the stock reload base so the off-hand prop stops jittering) ----
+
+-- The project's distinct stock (non-clean) base clips - the ones worth despiking into a clean copy.
+---@return string[]
+function AnimForgeWindow:stockBaseClips()
+    local out, seen = {}, {}
+    for _, key in ipairs(AE.gw.order or {}) do
+        local s = AE.gw.stages[key]
+        local bc = s and s.baseClip
+        if bc and bc ~= "" and not bc:find("_afclean", 1, true) and not seen[bc] then
+            seen[bc] = true
+            out[#out + 1] = bc
+        end
+    end
+    return out
+end
+
+-- Ask the watcher to bake despiked "clean" copies of the project's stock base clips into the mod; the
+-- poll below retargets each stage's baseClip to its clean copy on success. `silent` suppresses the
+-- toasts (used by the auto-run on create). Returns true when a request was written.
+function AnimForgeWindow:bakeCleanBase(silent)
+    self:syncReloadConfig()
+    local mod = AE.gw.config.mod
+    if not mod or mod == "" then
+        if not silent then self.toast:set("Pick a target mod first.", "danger") end
+        return false
+    end
+    local clips = self:stockBaseClips()
+    if #clips == 0 then
+        if not silent then self.toast:set("Base clips are already clean.", "ok") end
+        return false
+    end
+    self:pollWatcher()
+    if not self.watcherLive then
+        if not silent then
+            self.toast:set("No watcher running - start the auto-baker, then Clean base clips.", "edited")
+        end
+        return false
+    end
+    local ts = getTimestampMs()
+    local writer = getFileWriter("AnimForge/clean_base_request.json", true, false)
+    if not writer then return false end
+    writer:write(AnimForge.JSON.encode({ ts = ts, mod = mod, baseClips = clips }))
+    writer:close()
+    self.cleanBaseTs = ts
+    self.cleanBasePoll = 0
+    self.cleanBaseTries = 0
+    if not silent then self.toast:set("Baking clean base clips...", "ok") end
+    return true
+end
+
+function AnimForgeWindow:onReloadCleanBase()
+    self:bakeCleanBase(false)
+end
+
+-- Build a Reload-FX attachments group straight from the in-editor project (AE.gw), so attachments can be
+-- edited on a set that has NOT been exported yet (no baked node in the scan cache). Each stage previews
+-- on its baseClip (the clean base is present at boot) and carries the project's markers; openReloadFx
+-- binds back to this same project, so marker edits mirror the set editor and save via "Save changes".
+local GW_STAGE_LABEL = { load = "Load", loadShort = "LoadShort", rack = "Rack", unload = "Unload" }
+local function gwProjectAttachGroup()
+    if not (AE.project and AE.project.type == "gunworks") then return nil end
+    if not (AE.gw and AE.gw.config and AE.gw.order and AE.gw.stages) then return nil end
+    local cfg = AE.gw.config
+    if not cfg.animId or cfg.animId == "" then return nil end
+    local propItems = (cfg.propItem and cfg.propItem ~= "") and { cfg.propItem } or {}
+    local stages = {}
+    for i = 1, #AE.gw.order do
+        local key = AE.gw.order[i]
+        local s = AE.gw.stages[key]
+        if s and s.baseClip then
+            local markers = {}
+            for j = 1, #(s.markers or {}) do
+                local m = s.markers[j]
+                markers[j] = { event = m.event, timePc = m.timePc or 0, value = m.value or "" }
+            end
+            stages[#stages + 1] = {
+                mod = cfg.mod, animId = cfg.animId,
+                stage = GW_STAGE_LABEL[key] or key,
+                clip = s.baseClip, baseClip = s.baseClip,
+                markers = markers, propItems = propItems,
+            }
+        end
+    end
+    if #stages == 0 then return nil end
+    return { mod = cfg.mod, animId = cfg.animId, propItems = propItems, stages = stages }
+end
+
+-- Open the Reload Attachments editor for the reload currently loaded in the set editor. Prefers its baked
+-- node in the scan cache (exported set -> real posed clip preview); for a set that has not been exported
+-- yet it falls back to a group built from the live project, so you can place attachment markers straight
+-- after Create. openReloadFx binds to this project either way (shared markers), so edits there show up in
+-- the per-stage marker counts here and save through the one "Save changes".
+function AnimForgeWindow:onReloadEditAttachments()
+    self:syncReloadConfig()
+    local animId, mod = AE.gw.config.animId, AE.gw.config.mod
+    if not animId or animId == "" then
+        self.toast:set("Create the reload first.", "danger"); return
+    end
+    -- NB: no captureActiveStage here - it is only reachable from the stages screen (not while posing),
+    -- where AE.deltas is stale and a capture would wipe the active stage's pose deltas. Markers live in
+    -- AE.gw.stages already; the attachments editor binds to that.
+    loadReloadsFromCache()
+    local groups = rfxGroupedReloads()
+    local match
+    for i = 1, #groups do
+        if groups[i].animId == animId and (not mod or mod == "" or groups[i].mod == mod) then
+            match = groups[i]; break
+        end
+    end
+    if not match then
+        match = gwProjectAttachGroup()   -- not exported yet: edit attachments straight from the live project
+    end
+    if not match then
+        self.toast:set("Create the set first, then Edit attachments.", "danger"); return
+    end
+    openReloadFx(match)
+end
+
+-- Poll for the clean-base bake result (keyed by the request ts). On success retarget each stage's
+-- baseClip to its clean copy (carrying keyframes across the rename), persist, refresh the base-clip
+-- pickers + mod-clip cache, and try to hot-load the clean clips so the preview is clean this session.
+-- A brand-new clip may need one restart to first load; the toast says so.
+function AnimForgeWindow:pollCleanBase()
+    if not self.cleanBaseTs then return end
+    self.cleanBasePoll = (self.cleanBasePoll or 0) + 1
+    if self.cleanBasePoll < 15 then return end
+    self.cleanBasePoll = 0
+    self.cleanBaseTries = (self.cleanBaseTries or 0) + 1
+    local ok, r = pcall(readJsonFile, "AnimForge/clean_base_result.json")
+    if ok and r and r.ts == self.cleanBaseTs then
+        self.cleanBaseTs = nil
+        if r.ok and type(r.mapping) == "table" then
+            for _, key in ipairs(AE.gw.order or {}) do
+                local s = AE.gw.stages[key]
+                local clean = s and s.baseClip and r.mapping[s.baseClip]
+                if clean then
+                    local old = s.baseClip
+                    if AE.keyframes[old] and not AE.keyframes[clean] then
+                        AE.keyframes[clean] = AE.keyframes[old]
+                    end
+                    s.baseClip = clean
+                    if s.keyframes then AE.keyframes[clean] = s.keyframes end
+                end
+            end
+            -- Persist the retargeted baseClips. buildProject captures AE.deltas onto the active stage,
+            -- but on the stages screen AE.deltas is stale ({}) and would wipe that stage's pose deltas;
+            -- only allow the capture while actually posing (AE.deltas is valid then).
+            if AE.project and AE.project.type == "gunworks" then
+                local savedActive = AE.gw.activeStage
+                if not self.reloadEditing then AE.gw.activeStage = nil end
+                AP.save(GW.buildProject(AE.project.name))
+                AE.gw.activeStage = savedActive
+            end
+            pcall(function() AnimForge.EditCore.loadModClipsFromCache() end)
+            -- hot-load the clean clips' motion (PZ's own anims watcher never fires for mod dirs);
+            -- a brand-new clip that boot never scanned can't load live, hence the "restart" hint.
+            local p = getPlayer()
+            local ap = p and p:getAnimationPlayer()
+            if ap and ap.reloadEditAnimClip then
+                for _, clean in pairs(r.mapping) do
+                    pcall(function() ap:reloadEditAnimClip(clean) end)
+                end
+            end
+            if self.reloadEditing then GW.loadStage(self.reloadEditing) end   -- re-force the clean clip if posing
+            self:refreshReload()
+            self.toast:set("Clean base clips baked (" .. tostring(#(r.clips or {}))
+                .. "). If the preview still jitters, restart once to load them.", "ok")
+        else
+            self.toast:set("Clean base bake failed: " .. tostring(r.error or "see the watcher log") .. ".", "danger")
+        end
+    elseif self.cleanBaseTries >= 30 then
+        self.cleanBaseTs = nil
     end
 end
 
@@ -1196,10 +1506,16 @@ function AnimForgeWindow:prerender()
     -- band is repainted opaque on top by self.headerBg (with its extras) so scrolled rows never show
     -- above it; here we only lay down the backdrop + footer.
     T.fill(self, self.contentX, th, self.contentW, self.height - th, T.col.bg0)
-    -- footer divider + toast
+    -- footer divider + toast (clipped so a long status never slides under the right-side buttons)
     local fy = self.height - FOOTER_H
     T.hairline(self, self.contentX + T.sp.s, fy, self.contentW - T.sp.s * 2)
-    self.toast:render(self, self.contentX + T.sp.m, fy + 16)
+    local tx = self.contentX + T.sp.m
+    local rightLimit = self.contentX + self.contentW
+    if self.secondaryBtn and self.secondaryBtn:isVisible() then rightLimit = self.secondaryBtn:getX() - T.sp.s
+    elseif self.primaryBtn and self.primaryBtn:isVisible() then rightLimit = self.primaryBtn:getX() - T.sp.s end
+    self.toast:render(self, tx, fy + 16, math.max(40, rightLimit - tx))
+    self:pollGwBuild()
+    self:pollCleanBase()
 end
 
 function AnimForgeWindow:isTyping()
@@ -1227,6 +1543,7 @@ openPanel = function()
 end
 
 closePanel = function()
+    pcall(function() AnimForge.EditCore.rfxEndPosePreview() end)   -- restore gun/props if posing a reload stage
     saveProject()   -- persist any dialed-in edits for the active project
     forceClip(nil)
     local ap = animPlayer()

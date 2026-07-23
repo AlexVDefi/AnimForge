@@ -176,8 +176,7 @@ end
 
 -- Set of mods enabled on this save (lowercased ids). The scan cache (reload_markers.json) is built
 -- from every mod installed on disk, so it also carries reloads from mods that are installed but NOT
--- enabled here (e.g. Gunsmithing's muskets when only N-A-Guns is active). We gate the picker to the
--- active set so only reloads you can actually use show up.
+-- enabled on this save. We gate the picker to the active set so only reloads you can actually use show up.
 local function activeModSet()
     local set = {}
     local am = getActivatedMods()
@@ -695,6 +694,48 @@ local function rfxStopPreview()
     AE.rfx.gwDefaultParts = nil
     AE.rfx.snapshot = nil
     AE.rfx.lastFrac = -1
+end
+
+-- ---- pose-editor prop preview ----------------------------------------------------------------
+-- Show a reload stage's attached props (mag/parts) ON the posed character while editing that stage's
+-- pose, folded from the stage's markers at the current clip time. So you can pose Bip01_Prop2 (the
+-- off-hand prop bone) and watch the real mag move with it - the pose then bakes into the reload. Reuses
+-- the RFX preview engine (equip the held gun + applyPropEvent + attachVisualPart). Needs the gun equipped
+-- and Gunworks loaded; otherwise it no-ops cleanly.
+local function rfxBeginPosePreview(markers, mod, animId, forceProp)
+    rfxStopPreview()   -- clear any prior session first (safe if none)
+    AE.rfx.posePreview = false
+    AE.rfx.markers = {}
+    for i = 1, #(markers or {}) do
+        local m = markers[i]
+        AE.rfx.markers[i] = { event = m.event, timePc = m.timePc or 0, value = m.value or "" }
+    end
+    -- Seat-mag tuning: show the mag from t=0 (a synthetic off-hand gwSetProp at time 0), so you can pose
+    -- Bip01_Prop2 at the very start - the exact frame the seat freeze samples - instead of only after the
+    -- real gwSetProp marker. rfxApplyStateAt sorts by time, so this just extends the mag's visibility
+    -- earlier; it never touches the saved markers.
+    if forceProp and forceProp ~= "" then
+        table.insert(AE.rfx.markers, 1, { event = "gwSetProp", timePc = 0, value = forceProp })
+    end
+    if #AE.rfx.markers == 0 then return false end
+    AE.rfx.mod = mod
+    AE.rfx.animId = animId
+    AE.rfx.posePreview = rfxStartPreview() and true or false
+    return AE.rfx.posePreview
+end
+
+local function rfxEndPosePreview()
+    if not AE.rfx.posePreview then return end
+    AE.rfx.posePreview = false
+    rfxStopPreview()
+end
+
+-- Repaint the folded prop state at the pose editor's current clip fraction. Cheap (only mutates when
+-- the fold crosses a marker). No-op unless a pose preview is active.
+local function rfxApplyPosePreview()
+    if not AE.rfx.posePreview then return end
+    local len = getClipLen()
+    rfxApplyStateAt((len > 0) and (getClipTime() / len) or 0)
 end
 
 -- Load a discovered reload: copy its markers, force-play its clip on the live character, and start
@@ -1229,6 +1270,9 @@ AnimForge.EditCore = {
     rfxSave = rfxSave,
     rfxStartPreview = rfxStartPreview,
     rfxStopPreview = rfxStopPreview,
+    rfxBeginPosePreview = rfxBeginPosePreview,
+    rfxEndPosePreview = rfxEndPosePreview,
+    rfxApplyPosePreview = rfxApplyPosePreview,
     rfxUpdateCachedMarkers = rfxUpdateCachedMarkers,
     saveJson = saveJson,
     saveProject = saveProject,

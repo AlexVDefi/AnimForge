@@ -197,6 +197,115 @@ def apply_delta(text, bone, delta_q, anim_set=None, mode="post"):
     return text, keys, len(blocks)
 
 
+# Identity per key type: rotation quaternion (w,x,y,z)=(1,0,0,0), scale (1,1,1), translation (0,0,0).
+_IDENTITY_KEY = {
+    "R": "1.000000,0.000000,0.000000,0.000000",
+    "S": "1.000000,1.000000,1.000000",
+    "T": "0.000000,0.000000,0.000000",
+}
+
+
+def flatten_bone(text, bone, anim_set=None):
+    """Pin `bone` to IDENTITY (no rotation/translation, unit scale) on every R/S/T key in the set(s).
+
+    The engine reparents the off-hand prop bone Bip01_Prop2 onto Bip01_L_Hand for every player
+    (IsoPlayer.onAnimPlayerCreated -> addBoneReparent). A reload clip baked from a vanilla base still
+    carries the vanilla mag-prop keys on that bone, so a mod prop attached there both jitters AND floats
+    at the clip's arbitrary offset (now interpreted relative to the hand). Pinning the bone to identity
+    makes it sit exactly AT the hand and simply follow it; the reload markers (gwPartToHand/gwPartToGun)
+    then own all of the prop's intended gun<->hand motion. Lenient: a bone with no keys in a set is
+    skipped, not an error. Returns (text, keys_pinned)."""
+    span = _find_set_span(text, anim_set)
+    pinned = 0
+    # R = rotation (4-value key); S + T = scale/translation (3-value key). One block per animating set.
+    for key_re, letter in ((_KEY_RE, "R"), (_TKEY_RE, "S"), (_TKEY_RE, "T")):
+        const = _IDENTITY_KEY[letter]
+        last = key_re.groups                          # group index of the trailing ';;'
+        for body_start, body_end in reversed(list(_iter_bone_key_blocks(text, span, bone, letter))):
+            def repl(m, const=const, last=last):
+                return m.group(1) + const + m.group(last)
+            new_body, n = key_re.subn(repl, text[body_start:body_end])
+            text = text[:body_start] + new_body + text[body_end:]
+            pinned += n
+    return text, pinned
+
+
+def despike_bone(text, bone, anim_set=None, factor=3.5, floor=0.02):
+    """Remove isolated outlier ('spike') translation keys from a bone via a Hampel median-3 filter.
+
+    A vanilla off-hand prop track (Bip01_Prop2) is a mostly-smooth trajectory but carries a handful of
+    keyframes that jump far off and back (unused vanilla mag-prop garbage), which jitters a mod prop
+    attached there. For each of x/y/z, a key whose deviation from the median of {prev,self,next} exceeds
+    `factor` times the median deviation (floored) is replaced by that median - so only true spikes move,
+    the smooth motion is preserved, and the prop follows the hand cleanly. Returns (text, keys_fixed)."""
+    span = _find_set_span(text, anim_set)
+    fixed = 0
+    for body_start, body_end in reversed(list(_iter_bone_key_blocks(text, span, bone, "T"))):
+        body = text[body_start:body_end]
+        vals = [[float(m.group(2)), float(m.group(3)), float(m.group(4))]
+                for m in _TKEY_RE.finditer(body)]
+        n = len(vals)
+        if n < 3:
+            continue
+        new = [list(v) for v in vals]
+        for c in range(3):
+            med = [None] * n
+            devs = []
+            for i in range(1, n - 1):
+                m3 = sorted((vals[i - 1][c], vals[i][c], vals[i + 1][c]))[1]
+                med[i] = m3
+                devs.append(abs(vals[i][c] - m3))
+            if not devs:
+                continue
+            mdev = sorted(devs)[len(devs) // 2]
+            thr = max(floor, factor * mdev)
+            for i in range(1, n - 1):
+                if abs(vals[i][c] - med[i]) > thr:
+                    new[i][c] = med[i]
+        for i in range(n):
+            if new[i] != vals[i]:
+                fixed += 1
+        idx = [0]
+
+        def repl(m):
+            i = idx[0]
+            idx[0] += 1
+            v = new[i]
+            return "%s%.6f,%.6f,%.6f%s" % (m.group(1), v[0], v[1], v[2], m.group(5))
+
+        text = text[:body_start] + _TKEY_RE.sub(repl, body) + text[body_end:]
+    return text, fixed
+
+
+def freeze_bone_to_frame0(text, bone, anim_set=None):
+    """Pin `bone` to its FIRST keyframe's value on every R/S/T key in the set(s), making its pose a
+    single constant for the whole clip.
+
+    Used to 'seat' an off-hand prop (Bip01_Prop2): the vanilla prop track is a moving trajectory, so a
+    mag attached there rides that path (offset from the hand) AND looks different forward vs reversed (a
+    magazine unload is the load clip reversed). Freezing the bone to its frame-0 value drops the motion,
+    so the prop sits at one fixed offset from the hand and the load + unload look identical. The frame-0
+    value is taken AFTER any deltas are applied, so an authored Prop2 offset defines exactly where it
+    sits. Lenient: a bone with no keys in a set is skipped. Returns (text, keys_frozen)."""
+    span = _find_set_span(text, anim_set)
+    frozen = 0
+    for key_re, letter in ((_KEY_RE, "R"), (_TKEY_RE, "S"), (_TKEY_RE, "T")):
+        last = key_re.groups                          # trailing ';;' group
+        for body_start, body_end in reversed(list(_iter_bone_key_blocks(text, span, bone, letter))):
+            body = text[body_start:body_end]
+            first = key_re.search(body)
+            if not first:
+                continue
+            g0, g1, gl = first.group(0), first.group(1), first.group(last)
+            const = g0[len(g1): len(g0) - len(gl)]    # the value portion of the first key, verbatim
+            def repl(m, const=const, last=last):
+                return m.group(1) + const + m.group(last)
+            new_body, n = key_re.subn(repl, body)
+            text = text[:body_start] + new_body + text[body_end:]
+            frozen += n
+    return text, frozen
+
+
 def rename_set(text, old_name, new_name):
     """Rename `AnimationSet old { ... }` -> `AnimationSet new { ... }`. Used by
     the gun-specific route (ship under a new name gated by an AnimNode)."""

@@ -91,6 +91,47 @@ local function buildRings(pi, o, ax, ay, az)
     return rings
 end
 
+-- Translation frame: a bone's position delta is added to its LOCAL translation, which lives in its
+-- PARENT's frame - so the bone slides along the parent's axes, not its own. To make the drag arrows
+-- point where the bone actually moves, the translation gizmo is drawn along the parent bone's axes.
+-- Prop1/Prop2 are runtime-reparented onto the hands (IsoPlayer.onAnimPlayerCreated), so their effective
+-- parent is the hand. A bone with no mapping (or a missing parent) falls back to its own axes (the old
+-- behaviour), so nothing regresses.
+local TRANSLATE_PARENT = {
+    Bip01_Prop1      = "Bip01_R_Hand",      -- reparented onto the right hand at runtime
+    Bip01_Prop2      = "Bip01_L_Hand",      -- reparented onto the left hand at runtime
+    Bip01_R_Hand     = "Bip01_R_Forearm",
+    Bip01_R_Forearm  = "Bip01_R_UpperArm",
+    Bip01_R_UpperArm = "Bip01_R_Clavicle",
+    Bip01_L_Hand     = "Bip01_L_Forearm",
+    Bip01_L_Forearm  = "Bip01_L_UpperArm",
+    Bip01_L_UpperArm = "Bip01_L_Clavicle",
+    Bip01_Spine1     = "Bip01_Spine",
+    Bip01_Spine      = "Bip01",
+    Bip01_Neck       = "Bip01_Spine1",
+    Bip01_Head       = "Bip01_Neck",
+}
+
+-- The 3 world-space axis tips for a bone's translation gizmo: the PARENT bone's axis directions placed
+-- at THIS bone's origin, so the drawn arrows run along the frame the position delta moves in. Returns
+-- nil (caller falls back to the bone's own axes) when the bone has no mapped/loaded parent.
+local function parentAxisTipsWorld(ap, boneName, childO, axisLen)
+    local pname = TRANSLATE_PARENT[boneName]
+    if not pname then return nil end
+    local pidx = ap:getSkinningBoneIndex(pname, -1)
+    if not pidx or pidx < 0 then return nil end
+    local pg
+    local ok = pcall(function() pg = ap:getBoneGizmoWorld(pidx, axisLen) end)
+    if not ok or not pg or pg:size() < 12 then return nil end
+    local pox, poy, poz = pg:get(0), pg:get(1), pg:get(2)   -- parent origin (world)
+    -- parent axis DIRECTION (tip - origin) re-based at the child's origin
+    return {
+        { childO[1] + (pg:get(3) - pox), childO[2] + (pg:get(4) - poy), childO[3] + (pg:get(5) - poz) },
+        { childO[1] + (pg:get(6) - pox), childO[2] + (pg:get(7) - poy), childO[3] + (pg:get(8) - poz) },
+        { childO[1] + (pg:get(9) - pox), childO[2] + (pg:get(10) - poy), childO[3] + (pg:get(11) - poz) },
+    }
+end
+
 function AnimEditorOverlay:new()
     local o = ISUIElement:new(0, 0, getCore():getScreenWidth(), getCore():getScreenHeight())
     setmetatable(o, self); self.__index = self
@@ -117,16 +158,21 @@ function AnimEditorOverlay:refresh()
                 local oy = isoToScreenY(pi, g:get(0), g:get(1), g:get(2))
                 table.insert(self.nodes, { name = name, sx = ox, sy = oy })
                 if name == AE.bone then
-                    local axw = { g:get(3), g:get(4), g:get(5) }   -- X axis tip (world)
-                    local ayw = { g:get(6), g:get(7), g:get(8) }   -- Y axis tip (world)
-                    local azw = { g:get(9), g:get(10), g:get(11) }  -- Z axis tip (world)
+                    local co  = { g:get(0), g:get(1), g:get(2) }    -- bone origin (world)
+                    local axw = { g:get(3), g:get(4), g:get(5) }    -- bone-local X tip (world) - rotation
+                    local ayw = { g:get(6), g:get(7), g:get(8) }    -- bone-local Y tip (world)
+                    local azw = { g:get(9), g:get(10), g:get(11) }  -- bone-local Z tip (world)
+                    -- Translation arrows use the PARENT bone's axes (the frame the position delta moves
+                    -- in), so an arrow points exactly where the bone slides. Rotation rings keep the
+                    -- bone's own axes (rotation IS applied bone-local, so it already matches).
+                    local ptw = parentAxisTipsWorld(ap, name, co, AE.axisLen) or { axw, ayw, azw }
                     local tips = {
-                        { x = isoToScreenX(pi, axw[1], axw[2], axw[3]), y = isoToScreenY(pi, axw[1], axw[2], axw[3]) },
-                        { x = isoToScreenX(pi, ayw[1], ayw[2], ayw[3]), y = isoToScreenY(pi, ayw[1], ayw[2], ayw[3]) },
-                        { x = isoToScreenX(pi, azw[1], azw[2], azw[3]), y = isoToScreenY(pi, azw[1], azw[2], azw[3]) },
+                        { x = isoToScreenX(pi, ptw[1][1], ptw[1][2], ptw[1][3]), y = isoToScreenY(pi, ptw[1][1], ptw[1][2], ptw[1][3]) },
+                        { x = isoToScreenX(pi, ptw[2][1], ptw[2][2], ptw[2][3]), y = isoToScreenY(pi, ptw[2][1], ptw[2][2], ptw[2][3]) },
+                        { x = isoToScreenX(pi, ptw[3][1], ptw[3][2], ptw[3][3]), y = isoToScreenY(pi, ptw[3][1], ptw[3][2], ptw[3][3]) },
                     }
                     self.gizmo = { ox = ox, oy = oy, tips = tips,
-                        rings = buildRings(pi, { g:get(0), g:get(1), g:get(2) }, axw, ayw, azw) }
+                        rings = buildRings(pi, co, axw, ayw, azw) }
                 end
             end
         end

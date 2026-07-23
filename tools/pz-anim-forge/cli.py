@@ -383,6 +383,81 @@ def cmd_scan(args):
     return 0
 
 
+def cmd_preseed(args):
+    """Pre-seed stub reload nodes + clips so a NEW reload hot-loads with no restart. Run before boot."""
+    from pzanimforge import preseed as preseedmod
+    mod_root = os.path.abspath(args.mod_root)
+    reloads = []
+    for spec in (args.reload or []):
+        anim_id, sep, arch = spec.partition(":")
+        anim_id = anim_id.strip()
+        arch = (arch.strip() or "magazine") if anim_id else "magazine"
+        if anim_id:
+            reloads.append((anim_id, arch))
+    if args.from_mod:
+        reloads.extend(preseedmod.reloads_from_mod(mod_root))
+    discovered, guns_skipped = [], []
+    if args.all_guns:
+        for anim_id, arch, ft in preseedmod.guns_from_mod(mod_root):
+            if arch is None:
+                guns_skipped.append(ft)   # no MagazineType -> archetype not inferable; add via --reload
+                continue
+            reloads.append((anim_id, arch))
+            discovered.append({"gun": ft, "animId": anim_id, "archetype": arch})
+    seen, deduped = set(), []
+    for anim_id, arch in reloads:
+        if anim_id not in seen:
+            seen.add(anim_id)
+            deduped.append((anim_id, arch))
+    if not deduped:
+        raise SystemExit("no reloads to pre-seed: pass --reload <animId>:<archetype>, --from-mod, or --all-guns")
+    r = preseedmod.preseed(mod_root, deduped, pz_install=args.pz_install,
+                           build=args.build, force=args.force, dry_run=args.dry_run,
+                           clean_base=not args.no_clean_base)
+    if discovered:
+        r["discoveredGuns"] = discovered
+    if guns_skipped:
+        r.setdefault("warnings", []).append(
+            "guns with no MagazineType (archetype not inferred - add with --reload): " + ", ".join(guns_skipped))
+    print(json.dumps(r, indent=2))
+    return 0 if r.get("ok") else 1
+
+
+def cmd_cleanup(args):
+    """Remove a finished reload set's dev-only artifacts: unbuilt preseed stub nodes + their throwaway
+    clips, and the Bob_*_afclean clean-base copies. Real, built reload nodes/clips are kept."""
+    from pzanimforge import cleanup as cleanupmod
+    r = cleanupmod.cleanup(os.path.abspath(args.mod_root),
+                           remove_clean_base=not args.keep_clean_base, dry_run=args.dry_run)
+    print(json.dumps(r, indent=2))
+    return 0 if r.get("ok") else 1
+
+
+def cmd_clean_base(args):
+    """Write deduped, despiked copies of stock reload base clips (Bob_*_afclean) into a mod.
+
+    --mod-root ROOT --clip Bob_Reload_Rifle_Load[,...]   clean these clips into the mod
+    --json REQUEST                                        process an editor request ({mod, baseClips})
+
+    Both the editor preview and the shipped reload bake from the clean copy, so the off-hand prop
+    follows the hand without the vanilla spike jitter. Idempotent per clip.
+    """
+    pz = args.pz_install or paths.default_pz_install()
+    if args.json:
+        with open(args.json, "r", encoding="utf-8") as fh:
+            spec = json.load(fh)
+        from pzanimforge import clean_base as cbmod
+        roots = args.mods_dir or scanmod.default_mod_roots()
+        print(json.dumps(cbmod.bake_from_request(spec, roots, pz), indent=2))
+        return 0
+    clips = [c for c in (args.clip or "").split(",") if c]
+    if not args.mod_root or not clips:
+        raise SystemExit("clean-base needs --mod-root ROOT --clip CLIP[,...] (or --json REQUEST)")
+    r = gwmod.bake_clean_base_clips(os.path.abspath(args.mod_root), pz, clips, dry_run=args.dry_run)
+    print(json.dumps(r, indent=2))
+    return 0 if r.get("ok") else 1
+
+
 def cmd_preview(args):
     from pzanimforge import assimp_ingest  # lazy: only needed for viewing
     out = os.path.abspath(args.out_glb)
@@ -566,6 +641,52 @@ def main(argv=None):
     pf.add_argument("--mods-dir", dest="mods_dir", action="append", default=None,
                     help="mods root(s) used to resolve --json scope 'mod' (default ~/Zomboid/mods)")
     pf.set_defaults(func=cmd_prop_fix)
+
+    ps = sub.add_parser("preseed",
+                        help="pre-seed stub reload nodes + clips so a NEW reload hot-loads with no "
+                             "restart (run before launching the game)")
+    ps.add_argument("--mod-root", dest="mod_root", required=True, help="target gun mod root")
+    ps.add_argument("--reload", action="append", default=None,
+                    help="a reload to stub as '<animId>:<archetype>' (repeatable; archetype default magazine)")
+    ps.add_argument("--from-mod", dest="from_mod", action="store_true",
+                    help="also discover reloads from the mod's existing RegisterReloadAnims_*.lua")
+    ps.add_argument("--all-guns", dest="all_guns", action="store_true",
+                    help="discover EVERY gun in the mod's item scripts and pre-seed a reload for each "
+                         "(animId derived from module+item, archetype=magazine for mag-fed guns)")
+    ps.add_argument("--no-clean-base", dest="no_clean_base", action="store_true",
+                    help="skip generating the shared clean base clips (Bob_*_afclean) - by default they "
+                         "are made so the editor's clean preview works at boot with no restart")
+    ps.add_argument("--build", default=None, help="mod build subdir (default: the mod's build folder)")
+    ps.add_argument("--pz-install", dest="pz_install", default=None)
+    ps.add_argument("--force", action="store_true",
+                    help="overwrite even a real node/clip (default: keep real, refresh only own stubs)")
+    ps.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="report what would be written without writing")
+    ps.set_defaults(func=cmd_preseed)
+
+    cb = sub.add_parser("clean-base",
+                        help="write deduped despiked copies of stock reload base clips "
+                             "(Bob_*_afclean) into a mod, for a jitter-free editor preview + reload")
+    cb.add_argument("--mod-root", dest="mod_root", default=None, help="target mod root")
+    cb.add_argument("--clip", default=None,
+                    help="comma list of stock base clips to clean (e.g. Bob_Reload_Rifle_Load)")
+    cb.add_argument("--json", default=None, help="an editor request file ({mod, baseClips})")
+    cb.add_argument("--mods-dir", dest="mods_dir", action="append", default=None,
+                    help="mods root(s) used to resolve --json (default ~/Zomboid/mods)")
+    cb.add_argument("--pz-install", dest="pz_install", default=None)
+    cb.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="report what would be written without writing")
+    cb.set_defaults(func=cmd_clean_base)
+
+    cl = sub.add_parser("cleanup",
+                        help="remove a finished set's dev-only artifacts: unbuilt preseed stubs + their "
+                             "clips, and Bob_*_afclean clean-base copies (real reloads are kept)")
+    cl.add_argument("--mod-root", dest="mod_root", required=True, help="target mod root")
+    cl.add_argument("--keep-clean-base", dest="keep_clean_base", action="store_true",
+                    help="keep the Bob_*_afclean clips (needed only if you will re-bake the set later)")
+    cl.add_argument("--dry-run", dest="dry_run", action="store_true",
+                    help="report what would be removed without deleting")
+    cl.set_defaults(func=cmd_cleanup)
 
     p = sub.add_parser("preview", help=".x -> .glb for VIEWING only (assimp)")
     p.add_argument("--src", required=True)

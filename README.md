@@ -111,6 +111,33 @@ Full keyboard shortcuts are listed in the editor's own on-screen legend.
 
 ---
 
+## Building a reload animation (Gunworks)
+
+The reload editor targets guns registered with the **Gunworks (SWMG)** framework, so those modes only
+appear when SWMG is installed alongside your gun mod.
+
+1. **Pre-seed first — once, before you launch.** Project Zomboid only indexes a mod's files at boot, so
+   a reload node you first write in-game can't load until you restart *unless its path already existed
+   at boot*. Reserve them up front:
+   ```powershell
+   python tools\pz-anim-forge\cli.py preseed --mod-root "<your gun mod>" --all-guns
+   ```
+   (or double-click `tools\pz-anim-forge\preseed.bat` after editing the two variables inside).
+2. **Launch, open Anim Forge, and Create a reload set.** Name the set to match a pre-seeded stub —
+   `--all-guns` names them `<MODULE><ITEM>` (item `MyMod.M4CARBINE` → `MyModM4`) — to get the no-restart
+   path.
+3. **Pose each stage** (Load / Rack / Unload…), then **Edit attachments** to time which prop attaches to
+   which hand and when, on the color-coded timeline.
+4. **Save changes** — one button bakes the poses *and* the attachment markers into your mod (leave the
+   watcher running). A stub-matched name goes live instantly; a brand-new name builds fine but needs one
+   restart to first load — the editor says so plainly and shows a persistent "restart" badge until you do.
+5. **When the set is final,** tidy the dev-only stubs and clean-base copies:
+   ```powershell
+   python tools\pz-anim-forge\cli.py cleanup --mod-root "<your gun mod>"
+   ```
+
+---
+
 ## Uninstall
 
 - **Engine patch:** `cd java; .\uninstall.ps1` (restores the stock game).

@@ -50,6 +50,33 @@ emotes, Gunworks packs, mod-glb edits - and hot-reloads reload edits live):
 python cli.py watch                    # or double-click watch.bat
 ```
 
+**Pre-seed reload nodes** (run ONCE before launching the game, so a reload you build in-game hot-loads
+with no restart):
+
+```
+python cli.py preseed --mod-root <MyGunMod> --all-guns       # stub every gun in the mod (easiest)
+python cli.py preseed --mod-root <MyGunMod> --reload M4:magazine --reload Shotgun:shotgun
+```
+
+PZ only indexes a mod's files at BOOT, so a reload node first written in-game (after boot) cannot load
+until the next restart. `preseed` writes tiny inert STUB nodes (plus the shared clean-base clips) so the
+paths exist at boot; the in-game **Export reload pack** then overwrites a stub and the reload goes live
+immediately. `--all-guns` names each stub `<MODULE><ITEM>` (item `MyMod.M4CARBINE` -> `MyModM4`) - name
+your in-game set to match a stub to take the no-restart path. Safe to re-run (never clobbers a real
+reload); `--dry-run` previews, `--no-clean-base` skips the clean-base clips. Also `preseed.bat`.
+
+**Clean up a finished set** (remove the dev-only leftovers once a reload is built and shipping):
+
+```
+python cli.py cleanup --mod-root <MyGunMod>
+```
+
+Removes unbuilt preseed stubs + their throwaway clips and the `Bob_*_afclean` clean-base copies; your
+real, built reloads are untouched. `--keep-clean-base` keeps the afclean clips (only if you will re-bake
+the set later); `--dry-run` lists what it would delete. (The clean-base clips alone can be (re)generated
+with `python cli.py clean-base --mod-root <MyGunMod> --clip Bob_Reload_Rifle_Load`; the editor and
+`preseed` do this for you.)
+
 **Edit one vanilla clip's bone directly:**
 
 ```
@@ -108,13 +135,17 @@ rotates it and its children (FK); counter-rotate a child if you need, e.g., fing
 ```
 cli.py             entry point: edit | batch | bake | bake-set | wire-set | wire-gunworks |
                    wire-emote | reload-markers | bake-editor | bake-request | watch | scan |
-                   preview | edit-glb | bake-glb
+                   preseed | clean-base | cleanup | preview | edit-glb | bake-glb
 pzanimforge/
   x_edit.py        the editor core: bone-delta + set-rename text surgery on .x
   watcher.py       the unified auto-baker: routes each save type to its bake (what watch.bat runs)
   scan.py          scan installed mods -> mod_clips.json + reload_markers.json
   bake_request.py  reload-attachment bake + live-reload nudge (shared by the watcher)
   reload_markers.py  surgical <m_Events> retiming
+  preseed.py       stub reload nodes/clips so an in-game build hot-loads with no restart
+  clean_base.py    despiked clean-base clip generation (Bob_*_afclean) for jitter-free preview
+  cleanup.py       remove a finished set's unbuilt stubs + clean-base copies (keeps real reloads)
+  prop_fix.py      the off-hand / gun prop-socket rotation fix (ramrods etc.)
   wireset.py / wire.py / flatten.py   gated AnimSet clone generation (per-gun)
   gunworks.py / emote.py              the Gunworks-reload and emote export routes
   manifest.py / paths.py             manifest loading, install/dir resolution
@@ -122,6 +153,7 @@ pzanimforge/
 config/            example manifest + cached bone list
 gen_categories.py  regenerate the editor's AnimCategories.lua from the vanilla clips (after a game update)
 watch.bat          double-click launcher for the unified live auto-baker (every save type)
+preseed.bat        double-click launcher for the pre-seed step (edit the two vars inside first)
 ```
 
 ## After a game update

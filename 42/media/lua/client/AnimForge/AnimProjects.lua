@@ -15,7 +15,10 @@
 --               style, prop = { item }, sprite, attachments, shortRackAfterInsert,
 --               luaNamespace, mod, build } and a `stages` block keyed by stage
 --               (load / loadShort / rack / unload), each
---               { baseClip, duration, blendTime, done, keyframes, deltas, events }.
+--               { baseClip, duration, blendTime, done, keyframes, deltas, markers }.
+--               (`markers` = the reload's attachment events, shared read/write by the set editor and
+--               the Reload Attachments editor; legacy projects stored it as `events`, migrated on
+--               load. baseClip may be an AnimForge clean copy Bob_*_afclean shipped in the mod.)
 -- All blocks are plain serializable tables; save/load round-trip the whole project
 -- table, so the new fields persist losslessly without per-field handling. The index
 -- summary additionally carries `type` so the loader can branch without a full read.

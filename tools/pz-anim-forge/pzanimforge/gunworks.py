@@ -108,14 +108,83 @@ def _nonzero(v):
     return v and any(abs(float(c)) > 1e-9 for c in v)
 
 
-def _load_clip_text(pz, clip):
-    if not pz:
+def _load_clip_text(pz, clip, mod_root=None):
+    """Read a base reload clip's .x text. A project's baseClip can be an AnimForge clean-base copy
+    shipped inside the mod (Bob_*_afclean), so resolve the mod's anims_X/Bob FIRST, then fall back
+    to the vanilla install."""
+    candidates = []
+    if mod_root:
+        candidates.append(os.path.join(mod_root, "common", "media", "anims_X", "Bob", clip + ".x"))
+    if pz:
+        candidates.append(os.path.join(pz, "media", "anims_X", "Bob", clip + ".x"))
+    for src in candidates:
+        if os.path.isfile(src):
+            with open(src, "r", encoding="utf-8", errors="replace", newline="") as fh:
+                return fh.read()
+    if not candidates:
         raise SystemExit("PZ install not found; pass --pz-install")
-    src = os.path.join(pz, "media", "anims_X", "Bob", clip + ".x")
-    if not os.path.isfile(src):
-        raise SystemExit("vanilla clip not found: %s" % src)
-    with open(src, "r", encoding="utf-8", errors="replace", newline="") as fh:
-        return fh.read()
+    raise SystemExit("base clip not found in mod or vanilla: %s" % clip)
+
+
+# ---- clean base clips (despiked shared copies of stock reload clips) --------
+
+# Suffix marking an AnimForge-generated despiked copy of a stock reload clip. Distinct so it never
+# collides with a modder's own clip name and reads clearly in the base-clip picker.
+CLEAN_SUFFIX = "_afclean"
+
+# The two weapon-socket bones a reload's props ride. Their vanilla tracks carry the isolated spike
+# keyframes that jitter an attached prop; both are despiked in a clean copy so either socket follows
+# the hand smoothly.
+_PROP_BONES = ("Bip01_Prop1", "Bip01_Prop2")
+
+
+def clean_clip_name(base_clip):
+    """The despiked-copy clip name for a stock base clip. Idempotent: an already-clean clip stays."""
+    if not base_clip or base_clip.endswith(CLEAN_SUFFIX):
+        return base_clip
+    return base_clip + CLEAN_SUFFIX
+
+
+def bake_clean_base_clips(mod_root, pz_install, base_clips, dry_run=False):
+    """Write a deduped, despiked copy of each stock reload base clip into the mod.
+
+    For each DISTINCT stock clip in `base_clips`, load it from the vanilla install, despike the prop
+    sockets (Bip01_Prop1/Prop2) so an attached prop follows the hand without the vanilla spike
+    jitter, rename its AnimationSet to <clip>_afclean, and write it under the mod's anims_X/Bob. The
+    caller retargets its project stages' baseClip to the returned {stockClip: cleanClip} map, so BOTH
+    the editor preview and the shipped reload bake from the clean copy. Idempotent: an empty or
+    already-clean input clip is skipped (never self-copied). A clip missing from the install is
+    recorded with an `error` rather than aborting the batch. Returns a report dict."""
+    mod_root = os.path.abspath(mod_root)
+    anims_dir = os.path.join(mod_root, "common", "media", "anims_X", "Bob")
+    if not dry_run:
+        os.makedirs(anims_dir, exist_ok=True)
+    written, mapping, seen = [], {}, set()
+    for base_clip in (base_clips or []):
+        if not base_clip or base_clip.endswith(CLEAN_SUFFIX) or base_clip in seen:
+            continue
+        seen.add(base_clip)
+        clean = clean_clip_name(base_clip)
+        try:
+            text = _load_clip_text(pz_install, base_clip)   # stock source: vanilla install only
+        except SystemExit as e:
+            written.append({"baseClip": base_clip, "error": str(e)})
+            continue
+        despiked = 0
+        for bone in _PROP_BONES:
+            try:
+                text, fixed = x_edit.despike_bone(text, bone, anim_set=base_clip)
+                despiked += fixed
+            except ValueError:
+                pass   # this clip does not animate that socket; nothing to clean there
+        text, _ = x_edit.rename_set(text, base_clip, clean)
+        path = os.path.join(anims_dir, clean + ".x")
+        if not dry_run:
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+        mapping[base_clip] = clean
+        written.append({"baseClip": base_clip, "clean": clean, "path": path, "despiked": despiked})
+    return {"ok": True, "mod_root": mod_root, "clips": written, "mapping": mapping}
 
 
 def _apply_deltas(text, anim_set, deltas, order, mode):
@@ -396,7 +465,7 @@ def wire_gunworks(save_json, mod_root, pz_install, build=None, lua_namespace=Non
     report = {
         "ok": True, "animId": anim_id, "archetype": archetype,
         "mod_root": mod_root, "build": build, "luaNamespace": lua_namespace,
-        "clips": [], "nodes": [], "lua": None, "warnings": [],
+        "clips": [], "nodes": [], "newNodes": [], "lua": None, "warnings": [],
     }
 
     # Magazine guns reload through a model swap, so Gunworks routes them to the sprite (or
@@ -435,9 +504,15 @@ def wire_gunworks(save_json, mod_root, pz_install, build=None, lua_namespace=Non
 
         anim_name = "Bob_%s_%s" % (anim_id, spec_s["clipSuffix"])
 
-        # 1. bake the renamed .x clip
-        text = _load_clip_text(pz_install, base_clip)
+        # 1. bake the renamed .x clip (baseClip may be an AnimForge clean copy shipped in the mod)
+        text = _load_clip_text(pz_install, base_clip, mod_root=mod_root)
         text, applied = _apply_deltas(text, base_clip, stage.get("deltas"), order, mode)
+        # Guard despike: with clean base clips (Bob_*_afclean) the prop sockets are already despiked,
+        # so this is a no-op. It still runs in case a project bakes straight from a raw vanilla base
+        # (no clean-base step yet) - the off-hand prop bone Bip01_Prop2 carries a few outlier vanilla
+        # keyframes that jump off and back; removing just those spikes keeps the prop following the
+        # hand cleanly. Idempotent, so it never double-touches an already-clean clip.
+        text, _despiked = x_edit.despike_bone(text, "Bip01_Prop2", anim_set=base_clip)
         text, _ = x_edit.rename_set(text, base_clip, anim_name)
         clip_path = os.path.join(anims_dir, anim_name + ".x")
         if not dry_run:
@@ -452,6 +527,11 @@ def wire_gunworks(save_json, mod_root, pz_install, build=None, lua_namespace=Non
                                    archetype, stage.get("events"))
         node_name = "%s_%s" % (anim_id, spec_s["nodeSuffix"])
         node_path = os.path.join(nodes_dir, node_name + ".xml")
+        # A node whose .xml did not exist before this build was never in the engine's boot activeFileMap,
+        # so it cannot hot-load - the game must restart once to pick it up. A preseed stub (or a prior
+        # build) leaves the file in place, so it hot-loads. The editor turns this into a clear restart hint.
+        if not os.path.exists(node_path):
+            report["newNodes"].append(node_name)
         if not dry_run:
             with open(node_path, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(node_xml)

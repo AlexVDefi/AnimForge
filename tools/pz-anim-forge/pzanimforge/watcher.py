@@ -5,12 +5,14 @@ each kind and bakes it into the target mod the instant you Save/Export - no manu
 
   * reload-attachment markers  -> retime the mod's reload node XML + hot-reload it live in-game
   * grip "Export set"          -> bake-set (renamed .x) + wire-set (gated AnimSet XML + Lua hook)
-  * Gunworks reload pack        -> wire-gunworks (stage clips + nodes + RegisterReloadAnims.lua)
+  * Gunworks reload pack        -> wire-gunworks (stage clips + nodes + RegisterReloadAnims.lua) + a
+                                   Defaults.xml nudge so the new node loads live, + gw_build_result.json
   * emote                       -> wire-emote (1-frame .x + emote-gated node)
   * mod .glb clip edit          -> bake-glb (rewrite the bone keys in place / to a chosen file)
 
-The reload-marker path uses bake_request's claim/result protocol so the editor shows "baked" and the
-change goes live with no restart; the rest are detected from anim_edit.json and baked via the CLI.
+The reload-marker AND Gunworks-pack paths nudge the engine so the change goes live with no restart
+(marker via bake_request's claim/result protocol, pack via gw_build_result.json); the rest are
+detected from anim_edit.json and baked via the CLI.
 Pure file work: opens no sockets, needs no external helper. A bare single-clip "Save .x" (an override
 with no target mod in the save) is the one case that can't auto-bake - the log prints the manual line.
 """
@@ -18,10 +20,19 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 
 from . import bake_request
+from . import clean_base
 from . import prop_fix
+
+# One background reload-cache scan at a time (a full scan of a big mod set takes many seconds). `pending`
+# debounces: a refresh requested while a scan runs re-runs once at the end, so the cache still ends up
+# reflecting the latest bake without ever blocking the watcher loop or corrupting the file with a
+# concurrent write.
+_scan_lock = threading.Lock()
+_scan_state = {"running": False, "pending": False}
 
 
 def _resolve_mod(mod, mod_roots):
@@ -34,32 +45,83 @@ def _resolve_mod(mod, mod_roots):
     return None
 
 
-def _run_cli(cli, args, log):
-    r = subprocess.run([sys.executable, cli] + args, capture_output=True, text=True)
-    if r.returncode != 0:
-        log("  bake failed:\n" + (r.stderr or r.stdout).strip())
+def _run_cli(cli, args, log, heartbeat=None):
+    """Run a bake subprocess, keeping the editor's heartbeat alive while it works. A full pack bake takes
+    several seconds; blocking on subprocess.run would stall the watcher's status heartbeat past the
+    editor's 6s liveness window, so the "Auto-bake: LIVE" pill would wrongly flip to OFF mid-bake. Poll
+    with a 1s timeout and pulse `heartbeat` each tick instead."""
+    proc = subprocess.Popen([sys.executable, cli] + args,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    while True:
+        try:
+            out, err = proc.communicate(timeout=1.0)
+            break
+        except subprocess.TimeoutExpired:
+            if heartbeat:
+                try:
+                    heartbeat()
+                except Exception:
+                    pass
+    if proc.returncode != 0:
+        log("  bake failed:\n" + (err or out).strip())
         return None
     try:
-        return json.loads(r.stdout)
+        return json.loads(out)
     except Exception:
-        return r.stdout
+        return out
 
 
 def _refresh_reload_cache(channel_json, mod_roots, log):
-    """Rebuild the editor's reload picker cache (reload_markers.json) after a gunworks bake, so the
-    freshly baked node appears in "Edit reload attachments" without a manual `scan`. Non-fatal."""
+    """Rebuild the editor's discovery caches (reload_markers.json + mod_clips.json) after a bake, so a
+    freshly baked node/clip appears without a manual `scan`.
+
+    Runs in a BACKGROUND thread: a full scan of a large installed mod set takes many seconds, and doing
+    it on the watcher loop stalls the status heartbeat (editor's 'Auto-bake' pill wrongly flips to OFF)
+    and delays the build result the editor polls for. The reload is already baked + live by the time this
+    is called; this only repopulates the picker list a moment later. Serialized + debounced so rapid
+    re-bakes never run two scans at once (which would race on the JSON file)."""
     from .scan import scan
     channel_dir = os.path.dirname(channel_json)
+
+    def _run():
+        while True:
+            try:
+                summary = scan(channel_dir, mods_dirs=mod_roots)
+                log("  refreshed reload picker cache (%d reloads on disk)" % summary["reloads"]["count"])
+            except Exception as e:
+                log("  reload picker cache refresh failed: %s" % e)
+            with _scan_lock:
+                if not _scan_state["pending"]:
+                    _scan_state["running"] = False
+                    return
+                _scan_state["pending"] = False   # a bake arrived mid-scan: re-run to catch it
+
+    with _scan_lock:
+        if _scan_state["running"]:
+            _scan_state["pending"] = True
+            return
+        _scan_state["running"] = True
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _write_gw_result(channel_dir, result):
+    """Publish the Gunworks pack-build result atomically so the in-game editor's poll (which waits on
+    a matching `ts`) never reads a half-written file. Best-effort: a failed write just means the editor
+    times out its poll and the change still applies on the next reload/restart."""
+    tmp = os.path.join(channel_dir, "gw_build_result.json.%d.tmp" % os.getpid())
+    final = os.path.join(channel_dir, "gw_build_result.json")
     try:
-        summary = scan(channel_dir, mods_dirs=mod_roots)
-        log("  refreshed reload picker cache (%d reloads on disk)" % summary["reloads"]["count"])
-    except Exception as e:
-        log("  reload picker cache refresh failed: %s" % e)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(result, fh)
+        os.replace(tmp, final)
+    except OSError:
+        pass
 
 
-def _route(spec, cli, channel_json, mod_roots, pz, log):
+def _route(spec, cli, channel_json, mod_roots, pz, log, heartbeat=None):
     """Dispatch one anim_edit.json save (everything except reload markers, which the request path
-    owns) to the matching bake."""
+    owns) to the matching bake. `heartbeat` is pulsed while a bake subprocess runs so the editor's
+    liveness pill stays LIVE through a multi-second pack bake."""
     out = spec.get("output") or {}
     fmt = out.get("format")
 
@@ -81,7 +143,7 @@ def _route(spec, cli, channel_json, mod_roots, pz, log):
         except Exception as e:
             log("  (pristine capture failed, baking in place: %s)" % e)
             pristine = src
-        r = _run_cli(cli, ["bake-glb", "--json", channel_json, "--src", pristine, "--dst", dst], log)
+        r = _run_cli(cli, ["bake-glb", "--json", channel_json, "--src", pristine, "--dst", dst], log, heartbeat)
         if r is not None:
             try:
                 glb_edit.record_baked(channel_dir, src, dst)
@@ -96,21 +158,39 @@ def _route(spec, cli, channel_json, mod_roots, pz, log):
         if not mod:
             log("  grip set: mod '%s' not found under %s" % (s.get("mod"), ", ".join(mod_roots)))
             return
-        _run_cli(cli, ["bake-set", "--json", channel_json, "--mod-root", mod, "--pz-install", pz or ""], log)
-        _run_cli(cli, ["wire-set", "--json", channel_json, "--mod-root", mod, "--pz-install", pz or ""], log)
+        _run_cli(cli, ["bake-set", "--json", channel_json, "--mod-root", mod, "--pz-install", pz or ""], log, heartbeat)
+        _run_cli(cli, ["wire-set", "--json", channel_json, "--mod-root", mod, "--pz-install", pz or ""], log, heartbeat)
         log("  baked + wired grip set -> %s" % mod)
         return
 
     gw = spec.get("gunworks") or {}
     if gw.get("animId"):
+        channel_dir = os.path.dirname(channel_json)
+        ts = gw.get("ts")   # editor echoes this back via gw_build_result.json to poll THIS build
         mod = _resolve_mod(gw.get("mod"), mod_roots)
         if not mod:
             log("  gunworks reload: mod '%s' not found (is block.mod set? enable the mod's dir under %s)"
                 % (gw.get("mod"), ", ".join(mod_roots)))
+            _write_gw_result(channel_dir, {"ok": False, "ts": ts, "animId": gw.get("animId"),
+                                           "error": "target mod '%s' not found" % gw.get("mod")})
             return
-        _run_cli(cli, ["wire-gunworks", "--json", channel_json, "--mod-root", mod, "--pz-install", pz or ""], log)
+        r = _run_cli(cli, ["wire-gunworks", "--json", channel_json, "--mod-root", mod, "--pz-install", pz or ""], log, heartbeat)
         log("  built Gunworks reload pack -> %s" % mod)
+        if heartbeat:
+            heartbeat()   # pulse before the scan/nudge below so the pill stays LIVE across the whole route
         _refresh_reload_cache(channel_json, mod_roots, log)
+        # Nudge the engine's AnimSets watcher so the freshly written node(s) load live - the SAME
+        # live-reload the marker path already uses (refreshAnimSets re-scans the mod dirs on disk).
+        # Without this the new reload node sits unread until a game restart.
+        live = bake_request.nudge_defaults(pz)
+        log("  gunworks reload live-reload nudge=%s" % live)
+        # The baked clip anim names, so the editor can force-reload each clip's MOTION live (PZ's own
+        # anims file-watcher does not fire for mod dirs). See AnimationPlayer.reloadEditAnimClip.
+        clips = [c.get("anim") for c in r.get("clips", []) if c.get("anim")] if isinstance(r, dict) else []
+        new_nodes = r.get("newNodes") if isinstance(r, dict) else None
+        _write_gw_result(channel_dir, {"ok": r is not None, "ts": ts, "animId": gw.get("animId"),
+                                       "mod": gw.get("mod"), "liveReload": live,
+                                       "newNodes": new_nodes, "clips": clips})
         return
 
     em = spec.get("emote") or {}
@@ -119,7 +199,7 @@ def _route(spec, cli, channel_json, mod_roots, pz, log):
         if not mod:
             log("  emote: mod '%s' not found" % em.get("mod"))
             return
-        _run_cli(cli, ["wire-emote", "--json", channel_json, "--mod-root", mod, "--pz-install", pz or ""], log)
+        _run_cli(cli, ["wire-emote", "--json", channel_json, "--mod-root", mod, "--pz-install", pz or ""], log, heartbeat)
         log("  built emote -> %s" % mod)
         return
 
@@ -191,6 +271,18 @@ def watch(channel_dir, cli_path, pz_install=None, mod_roots=None, interval=0.5, 
                 else:
                     log("  prop rotation fix FAILED: %s" % pf.get("error"))
 
+            # 1c) clean base clips: despiked shared copies of stock reload clips baked into the mod,
+            # so the editor preview + the shipped reload both use a jitter-free base (claim/result).
+            cb = clean_base.process_pending_request(channel_dir, mod_roots, pz_install)
+            if cb is not None:
+                if cb.get("ok"):
+                    log("  clean base clips: %d written -> %s"
+                        % (len(cb.get("clips", [])), cb.get("mod_root")))
+                    # Refresh the discovery cache so the new clean clips show in the base-clip picker.
+                    _refresh_reload_cache(channel_json, mod_roots, log)
+                else:
+                    log("  clean base clips FAILED: %s" % cb.get("error"))
+
             # 2) every other save type, detected from anim_edit.json.
             mt = os.path.getmtime(channel_json) if os.path.exists(channel_json) else None
             if mt and mt != last:
@@ -203,7 +295,7 @@ def watch(channel_dir, cli_path, pz_install=None, mod_roots=None, interval=0.5, 
                     log("  (save not readable yet: %s)" % e)
                     continue
                 log("save detected " + time.strftime("%H:%M:%S"))
-                _route(spec, cli_path, channel_json, mod_roots, pz_install, log)
+                _route(spec, cli_path, channel_json, mod_roots, pz_install, log, heartbeat=write_status)
         except KeyboardInterrupt:
             try:
                 os.remove(status_path)

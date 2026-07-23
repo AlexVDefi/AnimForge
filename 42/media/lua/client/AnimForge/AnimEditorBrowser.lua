@@ -82,7 +82,12 @@ local GW = {}
 
 -- Per-stage edit state. AE persists across a Lua reload, so backfill the gunworks sub-state.
 AE.gw = AE.gw or {}
-AE.gw.stages = AE.gw.stages or {}   -- [stageKey] = { baseClip, deltas, duration, blendTime, done, keyframes, events }
+AE.gw.stages = AE.gw.stages or {}   -- [stageKey] = { baseClip, deltas, duration, blendTime, done, keyframes, markers }
+-- `markers` (per stage) is the ONE canonical store for this reload's attachment events
+-- (gwSetProp/gwPartToHand/gwPartToGun/gwSetPart). The reload-set editor seeds + persists them here and
+-- the Reload Attachments editor reads/writes the SAME table (see AnimEditorReloadFx's project binding),
+-- so an edit in either surface is visible in the other with no drift. buildBlock maps them to the wire
+-- format's `events`; legacy projects that stored `events` are migrated on load (applyProject).
 AE.gw.config = AE.gw.config or {
     animId = "", fullTypes = "", style = "attachment", propItem = "",
     spriteLoaded = "", spriteUnloaded = "", build = "42.13",
@@ -144,16 +149,34 @@ function GW.loadStage(key)
     AE.gw.activeStage = key
     AE.deltas = gwCopyDeltas(stage.deltas)
     selectClipInEditor(stage.baseClip)
-    -- Magazine unload is the load motion in reverse (mag eject); preview it reversed so it matches
-    -- the baked node's m_AnimReverse instead of looking identical to the load stage.
     local p = getPlayer()
     local ap = p and p:getAnimationPlayer()
+    -- A clean base clip (Bob_*_afclean) baked THIS session isn't in the boot mesh yet (a brand-new clip
+    -- needs a restart to load), so forcing it would play nothing. If it isn't loaded, preview on its
+    -- vanilla source instead so the pose is always visible; AE.clip stays the clean clip, so keyframes
+    -- and the bake still use it. A restart loads the clean clip and the preview upgrades automatically.
+    if ap and stage.baseClip:find("_afclean", 1, true) then
+        local len = 0
+        pcall(function() len = ap:getForcedEditClipLength() or 0 end)
+        if len <= 0 then
+            pcall(function() ap:setForcedEditClip((stage.baseClip:gsub("_afclean$", ""))) end)
+        end
+    end
+    -- Magazine unload is the load motion in reverse (mag eject); preview it reversed so it matches
+    -- the baked node's m_AnimReverse instead of looking identical to the load stage.
     if ap then
         pcall(function() ap:setForcedEditClipReversed(key == "unload" and AE.gw.archetype == "magazine") end)
     end
     for bone in pairs(AE.deltas) do
         applyBone(bone)
     end
+    -- Show this stage's attached reload props (mag/parts) on the character while posing, so a Bip01_Prop2
+    -- tweak moves the real mag and the pose reflects into the reload. No-op without markers / Gunworks /
+    -- an equipped gun.
+    local cfg = AE.gw.config
+    pcall(function()
+        AnimForge.EditCore.rfxBeginPosePreview(stage.markers, cfg and cfg.mod, cfg and cfg.animId)
+    end)
     return true
 end
 
@@ -181,34 +204,48 @@ function GW.seedArchetype(archetypeKey)
     return true
 end
 
--- Seed (or clear) the visual-mag part markers into the load + unload stage events from config.
--- Routing-safe: each marker is authored into its OWN stage's `events`, which wire-gunworks bakes
--- into that stage's own node XML (never a shared flat list). gwPartToGun (load) moves the mag from
--- the off-hand onto the gun; gwPartToHand (unload) reverses it; gwSetProp shows/hides it at the edges.
+-- Seed the visual-mag part markers into the load + unload stages ONCE, from config defaults.
+-- Non-destructive: if a stage already carries mag markers (e.g. you retimed them in the Reload
+-- Attachments editor) they are LEFT ALONE, so nothing you tune is ever reset to the defaults. Turning
+-- the feature off (visualMag=false) strips the auto markers. Because the project now OWNS the markers,
+-- this runs ONLY on create + the visual-mag checkbox toggle - never on export - so a marker exists
+-- because someone deliberately seeded or authored it, not as a side effect of every save.
+-- gwPartToGun (load) moves the mag off-hand->gun; gwPartToHand (unload) reverses it; gwSetProp shows/
+-- hides it at the edges. Each marker is authored into its OWN stage's `markers` (its own node XML).
 function GW.applyVisualMag()
     local cfg = AE.gw.config
     local MAG_EVENTS = { gwSetProp = true, gwPartToGun = true, gwPartToHand = true }
-    local function stripMag(events)
+    local function hasMag(markers)
+        for i = 1, #(markers or {}) do if MAG_EVENTS[markers[i].event] then return true end end
+        return false
+    end
+    local function stripMag(markers)
         local out = {}
-        for i = 1, #(events or {}) do
-            if not MAG_EVENTS[events[i].event] then out[#out + 1] = events[i] end
+        for i = 1, #(markers or {}) do
+            if not MAG_EVENTS[markers[i].event] then out[#out + 1] = markers[i] end
         end
         return out
     end
     local load = AE.gw.stages.load
     local unload = AE.gw.stages.unload
-    if load then load.events = stripMag(load.events) end
-    if unload then unload.events = stripMag(unload.events) end
-    if not cfg.visualMag or AE.gw.archetype ~= "magazine" then return end
+    -- feature off (or not a magazine): remove the auto-seeded mag markers, keep everything else
+    if not cfg.visualMag or AE.gw.archetype ~= "magazine" then
+        if load then load.markers = stripMag(load.markers) end
+        if unload then unload.markers = stripMag(unload.markers) end
+        return
+    end
     local mag = cfg.propItem
     if not mag or mag == "" then return end
-    if load then
-        load.events[#load.events + 1] = { event = "gwSetProp", timePc = 0.08, value = mag }
-        load.events[#load.events + 1] = { event = "gwPartToGun", timePc = cfg.magInsertPc or 0.55, value = mag }
+    -- feature on: seed defaults ONLY where no mag markers exist yet (never clobber retimed ones)
+    if load and not hasMag(load.markers) then
+        load.markers = load.markers or {}
+        load.markers[#load.markers + 1] = { event = "gwSetProp", timePc = 0.08, value = mag }
+        load.markers[#load.markers + 1] = { event = "gwPartToGun", timePc = cfg.magInsertPc or 0.55, value = mag }
     end
-    if unload then
-        unload.events[#unload.events + 1] = { event = "gwPartToHand", timePc = cfg.magEjectPc or 0.45, value = mag }
-        unload.events[#unload.events + 1] = { event = "gwSetProp", timePc = 0.92, value = "" }
+    if unload and not hasMag(unload.markers) then
+        unload.markers = unload.markers or {}
+        unload.markers[#unload.markers + 1] = { event = "gwPartToHand", timePc = cfg.magEjectPc or 0.45, value = mag }
+        unload.markers[#unload.markers + 1] = { event = "gwSetProp", timePc = 0.92, value = "" }
     end
 end
 
@@ -247,7 +284,8 @@ function GW.buildBlock()
             local entry = { baseClip = s.baseClip, deltas = s.deltas or {} }
             if s.duration then entry.duration = s.duration end
             if s.blendTime then entry.blendTime = s.blendTime end
-            if s.events then entry.events = s.events end
+            local mk = s.markers or s.events   -- wire format is `events`; migrate legacy field
+            if mk and #mk > 0 then entry.events = mk end
             stages[stageKey] = entry
         end
     end
@@ -255,12 +293,61 @@ function GW.buildBlock()
     return block
 end
 
--- Write the gunworks block to anim_edit.json (consumed by `wire-gunworks`).
-function GW.saveJson()
-    local data = { order = AE.order, mode = AE.mode, gunworks = GW.buildBlock() }
+-- Write the gunworks block to anim_edit.json (consumed by `wire-gunworks`). `ts` (optional) is echoed
+-- back by the watcher in gw_build_result.json so the editor can poll for THIS build finishing.
+---@param ts number|nil
+function GW.saveJson(ts)
+    local block = GW.buildBlock()
+    if ts then block.ts = ts end
+    local data = { order = AE.order, mode = AE.mode, gunworks = block }
     local writer = getFileWriter("AnimForge/anim_edit.json", true, false)
     writer:write(AnimForge.JSON.encode(data))
     writer:close()
+end
+
+-- Build the Gunworks reload PROFILE (the table Gunworks.RegisterWeapon's `reload` field expects) from
+-- the current gunworks block. Mirrors tools/pz-anim-forge gunworks.py `_build_profile`, so a live
+-- register matches the baked RegisterReloadAnims.lua the watcher writes.
+---@return table|nil profile
+---@return string[]|nil guns
+---@nodiscard
+function GW.buildRuntimeProfile()
+    local block = GW.buildBlock()
+    if not block.animId or block.animId == "" then return nil, nil end
+    local profile = { animId = block.animId }
+    local archetype = block.archetype or "magazine"
+    if archetype ~= "magazine" then profile.archetype = archetype end
+    if block.style and block.style ~= "none" then profile.style = block.style end
+    if block.magItem then
+        profile.magItem = block.magItem
+    elseif block.prop and block.prop.item then
+        profile.prop = { item = block.prop.item }
+    end
+    if block.sprite then profile.sprite = block.sprite end
+    if block.attachments then profile.attachments = block.attachments end
+    if block.shortRackAfterInsert then profile.shortRackAfterInsert = true end
+    local durations, hasDur = {}, false
+    for stageKey, stage in pairs(block.stages or {}) do
+        if stage.duration then durations[stageKey] = stage.duration; hasDur = true end
+    end
+    if hasDur then profile.durations = durations end
+    return profile, block.fullTypes
+end
+
+-- Register the just-exported reload with the live Gunworks registry so it animates THIS session with
+-- no restart (the generated RegisterReloadAnims.lua still owns the persistent OnGameBoot path). No-op
+-- when Gunworks is not loaded. Returns the number of guns registered.
+---@return integer
+function GW.registerLive()
+    local profile, guns = GW.buildRuntimeProfile()
+    if not profile or not guns or #guns == 0 then return 0 end
+    local ok, Gunworks = pcall(require, "WeaponSystems/Gunworks")
+    if not ok or type(Gunworks) ~= "table" or not Gunworks.RegisterWeapon then return 0 end
+    local n = 0
+    for i = 1, #guns do
+        if pcall(Gunworks.RegisterWeapon, guns[i], { reload = profile }) then n = n + 1 end
+    end
+    return n
 end
 
 -- Assemble a serializable gunworks project (AnimProjects type="gunworks").
@@ -282,7 +369,7 @@ function GW.buildProject(name)
             stages[stageKey] = {
                 baseClip = s.baseClip, duration = s.duration, blendTime = s.blendTime,
                 done = s.done == true, deltas = s.deltas or {},
-                keyframes = s.keyframes, events = s.events,
+                keyframes = s.keyframes, markers = s.markers,
             }
         end
     end
@@ -293,6 +380,7 @@ function GW.buildProject(name)
             animId = cfg.animId, fullTypes = gwSplitList(cfg.fullTypes),
             archetype = AE.gw.archetype, style = cfg.style, prop = prop, sprite = sprite,
             shortRackAfterInsert = cfg.shortRackAfterInsert == true,
+            visualMag = cfg.visualMag == true, magInsertPc = cfg.magInsertPc, magEjectPc = cfg.magEjectPc,
             luaNamespace = cfg.luaNamespace, mod = cfg.mod, build = cfg.build,
         },
         stages = stages,
@@ -315,9 +403,22 @@ function GW.applyProject(project)
         local s = stages[stageKey] or {}
         AE.gw.stages[stageKey] = {
             baseClip = s.baseClip, deltas = gwCopyDeltas(s.deltas), duration = s.duration,
-            blendTime = s.blendTime, done = s.done == true, keyframes = s.keyframes, events = s.events,
+            blendTime = s.blendTime, done = s.done == true, keyframes = s.keyframes,
+            markers = s.markers or s.events,   -- migrate legacy projects that stored `events`
         }
         if s.baseClip and s.keyframes then AE.keyframes[s.baseClip] = s.keyframes end
+    end
+    -- Infer visual-mag ON when the project carries mag markers but predates the persisted flag, so the
+    -- checkbox reads true for older reloads instead of falsely showing "off" (purely cosmetic - export
+    -- no longer keys off this flag).
+    local function anyMagMarker()
+        local MAG = { gwSetProp = true, gwPartToGun = true, gwPartToHand = true }
+        for _, st in pairs(AE.gw.stages) do
+            for i = 1, #(st.markers or {}) do
+                if MAG[st.markers[i].event] then return true end
+            end
+        end
+        return false
     end
     AE.gw.config = {
         animId = cfg.animId or "", fullTypes = table.concat(cfg.fullTypes or {}, ", "),
@@ -326,6 +427,8 @@ function GW.applyProject(project)
         spriteUnloaded = (cfg.sprite and cfg.sprite.unloaded) or "",
         build = cfg.build or "42.13", luaNamespace = cfg.luaNamespace or "",
         mod = cfg.mod or "", shortRackAfterInsert = cfg.shortRackAfterInsert == true,
+        visualMag = (cfg.visualMag == true) or anyMagMarker(), magInsertPc = cfg.magInsertPc or 0.55,
+        magEjectPc = cfg.magEjectPc or 0.45,
     }
     AE.gw.activeStage = AE.gw.order[1]
     AE.project = { name = project.name, slug = project.slug, weapon = AE.gw.archetypeKey, type = "gunworks" }

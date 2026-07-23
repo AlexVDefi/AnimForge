@@ -54,6 +54,85 @@ local TIMELINE_POP_W = AnimForge.EditPanel.TIMELINE_POP_W
 local AE = AnimForge.AnimEdit
 local T = AnimForge.AnimForgeTheme
 
+-- ===================== project binding (project owns the markers) ============================
+-- The reload's attachment markers live canonically in its gunworks PROJECT (AE.gw.stages[key].markers)
+-- so the reload-set editor and this attachments editor read/write the SAME table with no drift. When a
+-- reload has an owning AnimForge project we bind to it: seed this editor from the project's markers on
+-- open, and flush edits back to the project (+ persist) on every save. Foreign reloads with no project
+-- stay node-only (unchanged behaviour): the markers still bake into the node, there is just no project
+-- to mirror them into.
+
+-- Map an RFX stage label (Load/LoadShort/Rack/Unload, from the node file name) to a project stage key.
+local RFX_STAGE_TO_KEY = { load = "load", loadshort = "loadShort", rack = "rack", unload = "unload" }
+local function rfxStageKey(stageLabel)
+    local low = (stageLabel or ""):lower()
+    return RFX_STAGE_TO_KEY[low] or low
+end
+
+local function rfxCopyMarkers(src)
+    local out = {}
+    for i = 1, #(src or {}) do
+        out[i] = { event = src[i].event, timePc = src[i].timePc or 0, value = src[i].value or "" }
+    end
+    return out
+end
+
+-- Find a saved gunworks project whose reload matches this mod+animId, loaded full. Lets a standalone
+-- attachment edit (opened from the scan picker) flow into the SAME project the reload-set editor uses.
+local function rfxFindProject(mod, animId)
+    local AP = AnimForge.AnimProjects
+    if not AP or not animId or animId == "" then return nil end
+    local rows = AP.list()
+    for i = 1, #rows do
+        if rows[i].type == "gunworks" then
+            local p = AP.load(rows[i].slug)
+            local gw = p and p.gunworks
+            if gw and gw.animId == animId and (not mod or mod == "" or gw.mod == mod) then return p end
+        end
+    end
+    return nil
+end
+
+-- Bind this editor to the reload's owning project (if any). Ensures that project is the one loaded in
+-- AE.gw, so both editors share one live table. Sets AE.rfx.boundToProject; foreign reloads stay false.
+local function rfxBindProject(group)
+    AE.rfx.boundToProject = false
+    local animId = group and group.animId
+    local mod = group and group.mod
+    if not animId or animId == "" then return end
+    local cur = AE.project
+    local cfg = AE.gw and AE.gw.config
+    -- already editing this reload's project in the set editor? then AE.gw is it - just flag bound.
+    if cur and cur.type == "gunworks" and cfg and cfg.animId == animId
+        and (not mod or mod == "" or cfg.mod == mod) then
+        AE.rfx.boundToProject = true
+        return
+    end
+    local proj = rfxFindProject(mod, animId)
+    if proj and AE.GW and AE.GW.applyProject then
+        AE.GW.applyProject(proj)   -- load into AE.gw so both editors share one table
+        AE.rfx.boundToProject = true
+    end
+end
+
+-- Seed each group stage's markers from its project stage (project canonical). On the first open of a
+-- reload whose project has no markers yet, import the baked-node markers INTO the project instead, so
+-- pre-existing reloads adopt their current timing without loss.
+local function rfxSeedGroupFromProject(group)
+    if not AE.rfx.boundToProject or not AE.gw or not AE.gw.stages then return end
+    for i = 1, #group.stages do
+        local gs = group.stages[i]
+        local ps = AE.gw.stages[rfxStageKey(gs.stage)]
+        if ps then
+            if ps.markers and #ps.markers > 0 then
+                gs.markers = rfxCopyMarkers(ps.markers)          -- project wins
+            elseif gs.markers and #gs.markers > 0 then
+                ps.markers = rfxCopyMarkers(gs.markers)          -- first-open import from the node
+            end
+        end
+    end
+end
+
 -- Shown on the stage picker + the combined "Load / Short load" selector, so it is always clear what
 -- the Short load stage is for.
 local SHORT_LOAD_TIP =
@@ -277,7 +356,7 @@ end
 ReloadFxWindow = ISCollapsableWindow:derive("ReloadFxWindow")
 
 function ReloadFxWindow:new(x, y)
-    local o = ISCollapsableWindow.new(self, x or 200, y or 110, 470, 286)
+    local o = ISCollapsableWindow.new(self, x or 200, y or 110, 470, 316)
     o.title = "Reload Attachments"
     o.resizable = false
     o.uiCollapsed = false
@@ -346,27 +425,43 @@ function ReloadFxWindow:createChildren()
     self.nowLbl:initialise(); self:addChild(self.nowLbl)
     y = y + 24
 
+    -- ---- marker editor: pick an event + its value, then drop a marker at the playhead ----
+    -- Row 1 (value): the event and the prop/part it applies. gwSetPart swaps a gun part (parts combo);
+    -- every other event sets a prop, chosen through the tabbed "Props..." picker. updatePropControls
+    -- toggles which value control shows. Props... is right-aligned and the prop name is clipped to the
+    -- gap before it, so a long name (e.g. STANAG_MAG_ATTACHMENT) never slides under the button.
     self.evCombo = ISComboBox:new(pad, y, 150, 22, self, nil)
     self.evCombo:initialise(); self:addChild(self.evCombo)
     for i = 1, #RFX_EVENTS do self.evCombo:addOptionWithData(RFX_EVENT_LABEL[RFX_EVENTS[i]], RFX_EVENTS[i]) end
-    -- gwSetPart uses this parts combo; every prop event uses the richer tabbed/searchable/favouritable
-    -- picker (propLbl + Props... button) instead. prerender toggles which set is visible per event.
-    self.itemCombo = ISComboBox:new(pad + 156, y, 176, 22, self, nil)
+    self.evCombo.tooltip = "What this marker does at the playhead: set the off-hand prop, move a part hand<->gun, or swap a gun part."
+    local propsW = 72
+    local valX = pad + 156
+    self.propsBtn = ISButton:new(w - pad - propsW, y, propsW, 22, "Props...", self, ReloadFxWindow.onOpenProps)
+    self.propsBtn:initialise(); self:addChild(self.propsBtn); if T then T.styleGhost(self.propsBtn) end
+    self.propsBtn.tooltip = "Pick the prop this marker applies - the weapon's attachments, your mod's items, any base item, or your favourites."
+    self.rfxPropLabelW = (w - pad - propsW - 8) - valX
+    self.itemCombo = ISComboBox:new(valX, y, (w - pad) - valX, 22, self, nil)
     self.itemCombo:initialise(); self:addChild(self.itemCombo)
     self.chosenProp = ""
-    self.propLbl = ISLabel:new(pad + 158, y + 4, 16, "(clear)", 0.85, 0.9, 1, 1, UIFont.Small, true)
+    self.propLbl = ISLabel:new(valX + 2, y + 4, 16, "(none - pick a prop)", 0.85, 0.9, 1, 1, UIFont.Small, true)
     self.propLbl:initialise(); self:addChild(self.propLbl)
-    self.propsBtn = ISButton:new(pad + 272, y, 68, 22, "Props...", self, ReloadFxWindow.onOpenProps)
-    self.propsBtn:initialise(); self:addChild(self.propsBtn); if T then T.styleGhost(self.propsBtn) end
     self:rfxPopulateItemCombo()
     self.rfxLastEv = self.evCombo:getOptionData(self.evCombo.selected)
-    self.addBtn = ISButton:new(pad + 344, y, w - pad - (pad + 344), 22, "Add here", self, ReloadFxWindow.onAdd)
-    self.addBtn:initialise(); self:addChild(self.addBtn); if T then T.styleGhost(self.addBtn) end
     self:updatePropControls(self.rfxLastEv)
+    y = y + 28
+
+    -- Row 2 (action): the primary marker-adder - accent-styled + explicit so it reads as THE button to press.
+    self.addBtn = ISButton:new(pad, y, 210, 24, "+ Add marker at playhead", self, ReloadFxWindow.onAdd)
+    self.addBtn:initialise(); self:addChild(self.addBtn); if T then T.stylePrimary(self.addBtn) end
+    self.addBtn.tooltip = "Drop the chosen event onto the timeline at the current playhead. Then drag its tick to retime, or right-click it to delete."
     y = y + 30
 
-    self.saveBtn = ISButton:new(pad, y, 150, 24, "Save to mod", self, ReloadFxWindow.onSave)
+    -- Row 3 (save): bake everything - these markers plus any set-editor bone pose - into the mod.
+    self.saveBtn = ISButton:new(pad, y, 150, 24, "Save changes", self, ReloadFxWindow.onSave)
     self.saveBtn:initialise(); self:addChild(self.saveBtn); if T then T.styleGhost(self.saveBtn) end
+    self.saveBtn.tooltip = "Save all your changes and bake them into the mod - the marker timing here, "
+        .. "plus any bone pose you set in the set editor. Same 'Save changes' as the set editor, so you "
+        .. "never have to pick which save."
     self.hintLbl = ISLabel:new(pad + 158, y + 5, 16, "drag ticks to retime - right-click deletes",
         0.7, 0.72, 0.82, 1, UIFont.Small, true)
     self.hintLbl:initialise(); self:addChild(self.hintLbl)
@@ -408,7 +503,7 @@ function ReloadFxWindow:setCollapsed(c)
         self:setHeight(th)
         if self.minBtn then self.minBtn:setTitle("+") end
     else
-        self:setHeight(self.fullHeight or 286)
+        self:setHeight(self.fullHeight or 316)
         for i = 1, #kids do if kids[i] then kids[i]:setVisible(true) end end
         self:refreshStageCombo()   -- re-hide the stage combo / toggle for single-stage or combined
         self:updatePropControls(self.rfxLastEv)   -- re-hide the parts combo vs prop picker per event
@@ -598,10 +693,23 @@ function ReloadFxWindow:onOpenProps()
     self.propWin:initialise(); self.propWin:instantiate(); self.propWin:addToUIManager()
 end
 
+-- Truncate `text` with an ellipsis so it fits `maxPx` at the label font - keeps a long prop name from
+-- sliding under the right-aligned Props... button.
+function ReloadFxWindow:fitLabel(text, maxPx)
+    if not maxPx or maxPx <= 0 then return text end
+    local tm = getTextManager()
+    if tm:MeasureStringX(UIFont.Small, text) <= maxPx then return text end
+    while #text > 1 and tm:MeasureStringX(UIFont.Small, text .. "...") > maxPx do
+        text = text:sub(1, #text - 1)
+    end
+    return text .. "..."
+end
+
 function ReloadFxWindow:onPropPicked(ft)
     self.chosenProp = ft or ""
     if self.propLbl then
-        self.propLbl:setName((ft == nil or ft == "") and "(clear)" or (tostring(ft):gsub("^.-%.", "")))
+        local name = (ft == nil or ft == "") and "(none - pick a prop)" or (tostring(ft):gsub("^.-%.", ""))
+        self.propLbl:setName(self:fitLabel(name, self.rfxPropLabelW))
     end
 end
 
@@ -630,9 +738,42 @@ end
 -- plus a small bake request the Anim Forge watcher picks up, writing back a result we poll for below.
 -- No manual bake step. Refreshes the scan cache too so reopening the editor shows the saved state
 -- (the bake edits the mod XML but does NOT rewrite reload_markers.json, which the picker reads).
+-- Flush the current stage's edited markers back into its project stage (+ persist), so the reload-set
+-- editor and a later reopen read the same markers. No-op for foreign reloads with no owning project.
+function ReloadFxWindow:flushMarkersToProject()
+    if not AE.rfx.boundToProject or not AE.gw or not AE.gw.stages then return end
+    local gs = AE.rfx.group and AE.rfx.stageIndex and AE.rfx.group.stages[AE.rfx.stageIndex]
+    local key = gs and rfxStageKey(gs.stage)
+    local ps = key and AE.gw.stages[key]
+    if not ps then return end
+    ps.markers = rfxCopyMarkers(AE.rfx.markers)
+    -- Persist without wiping pose deltas: saveProject -> buildProject captures AE.deltas onto the
+    -- active stage, but the pose editor is not the active surface here (AE.deltas is stale), so nil the
+    -- active stage across the save to skip that capture. Only markers changed; poses stay intact.
+    local savedActive = AE.gw.activeStage
+    AE.gw.activeStage = nil
+    pcall(saveProject)   -- type-aware: rebuilds + persists the gunworks project
+    AE.gw.activeStage = savedActive
+end
+
+-- Copy EVERY stage's current markers into the project (in memory, no bake, no persist), so the unified
+-- "Save changes" (which bakes the whole pack) picks up all your marker edits, not just the focused stage.
+function ReloadFxWindow:captureMarkersToProject()
+    if not AE.rfx.boundToProject or not AE.gw or not AE.gw.stages or not AE.rfx.group then return end
+    -- fold the focused stage's live edits into its group stage first
+    local cur = AE.rfx.stageIndex and AE.rfx.group.stages[AE.rfx.stageIndex]
+    if cur then cur.markers = rfxCopyMarkers(AE.rfx.markers) end
+    for i = 1, #AE.rfx.group.stages do
+        local gs = AE.rfx.group.stages[i]
+        local ps = AE.gw.stages[rfxStageKey(gs.stage)]
+        if ps then ps.markers = rfxCopyMarkers(gs.markers or {}) end
+    end
+end
+
 function ReloadFxWindow:writeBakeRequestForCurrent()
     if not rfxSave("") then return false end
     rfxUpdateCachedMarkers()
+    self:flushMarkersToProject()
     local ts = getTimestampMs()
     local writer = getFileWriter("AnimForge/rfx_bake_request.json", true, false)
     if writer then
@@ -666,9 +807,16 @@ function ReloadFxWindow:saveNextStage()
     self:writeBakeRequestForCurrent()
 end
 
--- Save. Combined mode bakes EVERY stage (each its own node) one at a time via the poll below, so all
--- your cross-clip edits persist in one click. Per-stage mode bakes just the focused stage.
+-- Save. When this reload has an owning project (the normal case), route to the hub's one unified
+-- "Save changes": it folds these markers + any bone pose into the project and bakes the whole pack, so
+-- the set editor and this editor never disagree about what's saved. A foreign reload with no project
+-- falls back to baking just its node markers (combined mode bakes every stage one at a time).
 function ReloadFxWindow:onSave()
+    if AE.rfx.boundToProject and AE.hub and AE.hub.saveChanges then
+        self.hintLbl:setName("Saving all changes into the mod...")
+        AE.hub:saveChanges()   -- captures these markers (+ any pose) into the project, then full bake
+        return
+    end
     if barCombined() then
         self.saveResumeStage = AE.rfx.stageIndex
         self.saveQueue = {}
@@ -847,6 +995,7 @@ function ReloadFxWindow:close()
     AE.rfx.group = nil
     AE.rfx.stageIndex = nil
     AE.rfx.combined = false
+    AE.rfx.boundToProject = false
     if self.propWin then self.propWin:removeFromUIManager(); self.propWin = nil end
     rfxClearPropOverrides()   -- never leave a -90X socket override on the player after closing
     rfxStopPreview()
@@ -864,18 +1013,22 @@ local function openReloadFx(reload)
     if loadModClipsFromCache and not (AE.modClipNames and #AE.modClipNames > 0) then
         pcall(loadModClipsFromCache)
     end
-    local group, stage
+    local group
     if reload and reload.stages then
         group = reload
-        stage = group.stages[1]
-        for i = 1, #group.stages do
-            if group.stages[i].markers and #group.stages[i].markers > 0 then stage = group.stages[i]; break end
-        end
     elseif reload then
-        stage = reload
         group = { mod = reload.mod, animId = reload.animId, propItems = reload.propItems, stages = { reload } }
     end
-    if not group or not stage then return false end
+    if not group then return false end
+    -- Bind to the reload's owning project + seed this editor's markers from it (project canonical), so
+    -- edits mirror the reload-set editor. Done before the default-stage pick so the pick sees project markers.
+    rfxBindProject(group)
+    rfxSeedGroupFromProject(group)
+    local stage = group.stages[1]
+    for i = 1, #group.stages do
+        if group.stages[i].markers and #group.stages[i].markers > 0 then stage = group.stages[i]; break end
+    end
+    if not stage then return false end
     AE.rfx.group = group
     AE.rfx.combined = false   -- start in per-stage mode; the "All clips" toggle opts into combined
     AE.rfx.stageIndex = 1
@@ -1115,6 +1268,9 @@ function AnimEditorPanel:prerender()
     end
     self:updateTimeLabel(t, len)   -- every frame, so the (N kf) count refreshes live
     self:refreshDoneBtn()
+    -- If posing a reload stage that has markers, fold + paint its attached props at this frame, so the
+    -- mag appears in the off-hand and moves with a Bip01_Prop2 pose tweak.
+    AnimForge.EditCore.rfxApplyPosePreview()
 end
 
 

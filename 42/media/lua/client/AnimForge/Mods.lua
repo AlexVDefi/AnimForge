@@ -6,14 +6,15 @@ AnimForge = AnimForge or {}
 local Mods = {}
 AnimForge.Mods = Mods
 
--- Mods that provide the framework / tooling, never an animation target.
+-- Mods that provide the framework / tooling, never an animation target: Anim Forge itself, and the
+-- Gunworks (SWMG) reload framework it wires into. Add any other framework mod id here to hide it from
+-- the gun picker.
 local FRAMEWORK = {
-    AnimForge = true, SWMG = true, AgentBridge = true, AgentBridgeB41 = true,
-    PZUITestMod = true, PZProfiler = true,
+    AnimForge = true, SWMG = true,
 }
 
 --- Extract the owning mod folder id from a script's source path
---- (e.g. ".../mods/NikAlexGuns/42.13/media/scripts/x.txt" -> "NikAlexGuns").
+--- (e.g. ".../mods/MyGunMod/42/media/scripts/x.txt" -> "MyGunMod").
 ---@param fileName string|nil
 ---@return string|nil
 local function modIdFromFileName(fileName)
@@ -38,7 +39,7 @@ local function activeModMap()
 end
 
 --- Active mods that own at least one ranged weapon, each with its sorted weapon fullTypes.
---- Shape: { { id = "NikAlexGuns", name = "N-A-Guns", weapons = { "NA.M4CARBINE", ... } }, ... }
+--- Shape: { { id = "MyGunMod", name = "My Gun Mod", weapons = { "MyMod.M4CARBINE", ... } }, ... }
 ---@return table[]
 function Mods.scanGunMods()
     local activeMap = activeModMap()
