@@ -22,18 +22,27 @@ local function modIdFromFileName(fileName)
     return fileName:match("[/\\][Mm]ods[/\\]([^/\\]+)[/\\]")
 end
 
---- Map each active mod id (lowercased, backslash-stripped) to its original-case id. The engine
---- lowercases script file paths, so a path-derived mod folder must be matched case-insensitively;
---- the original-case id is what getModInfoByID and the exporter's mod-folder resolution expect.
----@return table<string,string>
+--- Map each active mod's FOLDER and its id (both lowercased) to a shared entry `{ dir, id, name }`.
+--- Script file paths carry the mod's FOLDER, but getActivatedMods() returns the mod.info `id`, which
+--- can differ (e.g. folder "GunsOfMarz" but id "MarzGuns"). Keying by both lets a path-derived folder
+--- resolve to an active mod either way. `dir` is the folder the tool writes to (what the exporter
+--- resolves under ~/Zomboid/mods); `name` is the display label; `id` is the mod.info id.
+---@return table<string, table>
 local function activeModMap()
     local map = {}
     local am = getActivatedMods()
-    if am then
-        for i = 0, am:size() - 1 do
-            local bare = am:get(i):gsub("^\\", "")
-            map[bare:lower()] = bare
+    if not am then return map end
+    for i = 0, am:size() - 1 do
+        local id = am:get(i):gsub("^\\", "")
+        local info = getModInfoByID(id)
+        local dir, name = id, nil
+        if info then
+            local d = info:getDir(); if d and d ~= "" then dir = d end
+            local n = info:getName(); if n and n ~= "" then name = n end
         end
+        local entry = { dir = dir, id = id, name = name or dir }
+        map[dir:lower()] = entry
+        if id:lower() ~= dir:lower() then map[id:lower()] = entry end
     end
     return map
 end
@@ -51,13 +60,12 @@ function Mods.scanGunMods()
             local item = items:get(i)
             if item and item:isRanged() then
                 local pathId = modIdFromFileName(item:getFileName())
-                local modId = pathId and activeMap[pathId:lower()]
-                if modId and not FRAMEWORK[modId] then
-                    local bucket = byMod[modId]
+                local entry = pathId and activeMap[pathId:lower()]
+                if entry and not FRAMEWORK[entry.dir] and not FRAMEWORK[entry.id] then
+                    local bucket = byMod[entry.dir]
                     if not bucket then
-                        local info = getModInfoByID(modId) or getModInfoByID("\\" .. modId)
-                        bucket = { id = modId, name = (info and info:getName()) or modId, weapons = {} }
-                        byMod[modId] = bucket
+                        bucket = { id = entry.dir, name = entry.name, weapons = {} }
+                        byMod[entry.dir] = bucket
                         order[#order + 1] = bucket
                     end
                     bucket.weapons[#bucket.weapons + 1] = item:getFullName()
@@ -109,7 +117,8 @@ function Mods.attachmentsForGun(modId, gunFullType)
             local item = items:get(i)
             if item then
                 local pathId = modIdFromFileName(item:getFileName())
-                if pathId and activeMap[pathId:lower()] == modId then
+                local entry = pathId and activeMap[pathId:lower()]
+                if entry and entry.dir == modId then
                     local inst = instanceItem(item:getFullName())
                     if inst and instanceof(inst, "WeaponPart") then
                         local mo = inst:getMountOn()
@@ -190,7 +199,8 @@ function Mods.modItemInfos(modId)
             local item = items:get(i)
             if item then
                 local pathId = modIdFromFileName(item:getFileName())
-                if pathId and activeMap[pathId:lower()] == modId then
+                local entry = pathId and activeMap[pathId:lower()]
+                if entry and entry.dir == modId then
                     out[#out + 1] = { fullType = item:getFullName(), name = scriptName(item) }
                 end
             end
