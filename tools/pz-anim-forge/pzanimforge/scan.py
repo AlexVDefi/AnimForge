@@ -23,15 +23,56 @@ from . import prop_fix
 # ------------------------------------------------------------------- mod discovery ---
 
 def default_mod_roots():
-    """Directories that each hold installed mods, one subfolder per mod. Default: ~/Zomboid/mods
-    (where Project Zomboid loads mods from). Override/extend with --mods-dir / --mod-root."""
+    """Directories that each hold installed mods. Defaults: ~/Zomboid/mods (where Project Zomboid loads
+    mods, one mod per subfolder) AND ~/Zomboid/Workshop (local Workshop staging, where each item nests
+    its mod root(s) under <item>/Contents/mods/<mod>). _iter_mod_dirs unwraps the Workshop layout
+    automatically. Override/extend with --mods-dir / --mod-root."""
     home = os.path.expanduser("~")
-    return [os.path.join(home, "Zomboid", "mods")]
+    return [os.path.join(home, "Zomboid", "mods"),
+            os.path.join(home, "Zomboid", "Workshop")]
+
+
+def _child_dir(parent, name_lower):
+    """The immediate subdirectory of `parent` whose name matches `name_lower` case-insensitively (so
+    'Contents' vs 'contents' both work), or None."""
+    try:
+        for n in os.listdir(parent):
+            if n.lower() == name_lower and os.path.isdir(os.path.join(parent, n)):
+                return os.path.join(parent, n)
+    except OSError:
+        pass
+    return None
+
+
+def contents_mods_dir(item_dir):
+    """`<item_dir>/Contents/mods` if it exists (the ~/Zomboid/Workshop staging wrapper: a workshop item
+    nests its actual mod root(s) under Contents/mods/<mod>), else None. Case-tolerant."""
+    contents = _child_dir(item_dir, "contents")
+    return contents and _child_dir(contents, "mods")
+
+
+def _mod_roots_under(base):
+    """Yield (modName, modRootPath) for each mod under a mods container `base`, transparently unwrapping
+    the Workshop staging layout. A ~/Zomboid/mods subfolder IS a mod; a ~/Zomboid/Workshop subfolder is
+    a workshop ITEM whose real mod root(s) live under <item>/Contents/mods/<mod> (one item can bundle
+    several mods). Detected by a Contents/mods dir on the subfolder."""
+    for name in sorted(os.listdir(base)):
+        sub = os.path.join(base, name)
+        if not os.path.isdir(sub):
+            continue
+        cm = contents_mods_dir(sub)
+        if cm:
+            for m in sorted(os.listdir(cm)):
+                mp = os.path.join(cm, m)
+                if os.path.isdir(mp):
+                    yield m, mp
+        else:
+            yield name, sub
 
 
 def _iter_mod_dirs(mods_dirs, mod_roots):
-    """Yield (modName, modRootPath) for every mod: each explicit --mod-root, plus every immediate
-    subdirectory of each --mods-dir. De-duplicated by mod name (first wins)."""
+    """Yield (modName, modRootPath) for every mod: each explicit --mod-root, plus every mod under each
+    --mods-dir (immediate subfolder, or a Workshop item's Contents/mods/<mod>). Deduped by mod name."""
     seen = set()
     for root in mod_roots or []:
         root = os.path.abspath(root)
@@ -43,11 +84,10 @@ def _iter_mod_dirs(mods_dirs, mod_roots):
     for base in mods_dirs or []:
         if not os.path.isdir(base):
             continue
-        for name in sorted(os.listdir(base)):
-            p = os.path.join(base, name)
-            if os.path.isdir(p) and name not in seen:
+        for name, path in _mod_roots_under(base):
+            if name not in seen:
                 seen.add(name)
-                yield name, p
+                yield name, path
 
 
 def _walk_files(root, want, depth=10):

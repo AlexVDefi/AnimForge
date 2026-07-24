@@ -84,8 +84,9 @@ mod:
 python tools\pz-anim-forge\cli.py scan
 ```
 
-This only reads your mods and writes two small JSON files into the editor's channel dir
-(`%USERPROFILE%\Zomboid\Lua\AnimForge\`). Skip it if you only edit vanilla clips.
+This only reads your mods (from both `%USERPROFILE%\Zomboid\mods` and `%USERPROFILE%\Zomboid\Workshop`,
+including Workshop's `Contents\mods\<mod>` staging layout) and writes two small JSON files into the
+editor's channel dir (`%USERPROFILE%\Zomboid\Lua\AnimForge\`). Skip it if you only edit vanilla clips.
 
 ---
 

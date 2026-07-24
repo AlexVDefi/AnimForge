@@ -38,10 +38,19 @@ _scan_state = {"running": False, "pending": False}
 def _resolve_mod(mod, mod_roots):
     if not mod:
         return None
+    from .scan import contents_mods_dir
     for root in mod_roots:
         p = os.path.join(root, mod)
         if os.path.isdir(p):
             return p
+        # ~/Zomboid/Workshop staging: the mod lives under <root>/<item>/Contents/mods/<mod>.
+        if os.path.isdir(root):
+            for item in sorted(os.listdir(root)):
+                cm = contents_mods_dir(os.path.join(root, item))
+                if cm:
+                    mp = os.path.join(cm, mod)
+                    if os.path.isdir(mp):
+                        return mp
     return None
 
 
@@ -214,7 +223,8 @@ def watch(channel_dir, cli_path, pz_install=None, mod_roots=None, interval=0.5, 
         def log(msg):
             print(msg, flush=True)
     if not mod_roots:
-        mod_roots = [os.path.join(os.path.expanduser("~"), "Zomboid", "mods")]
+        from .scan import default_mod_roots
+        mod_roots = default_mod_roots()   # ~/Zomboid/mods + ~/Zomboid/Workshop (staging, unwrapped)
     channel_json = os.path.join(channel_dir, "anim_edit.json")
 
     log("Anim Forge auto-baker  (every save type)")

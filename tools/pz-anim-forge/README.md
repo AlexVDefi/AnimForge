@@ -35,11 +35,13 @@ its saves (`anim_edit.json`), a live-reload request/result pair, and the discove
 
 ## Common commands
 
-**Scan your mods** (refresh the editor's Mods / reload tabs):
+**Scan your mods** (refresh the editor's Mods / reload tabs). Covers both `~/Zomboid/mods` and
+`~/Zomboid/Workshop` - the latter is the local Workshop staging area, where each item nests its mod
+root(s) under `<item>/Contents/mods/<mod>`; the scan unwraps that automatically:
 
 ```
 python cli.py scan
-# also scan a mod you are developing outside ~/Zomboid/mods:
+# also scan a mod you are developing outside those folders:
 python cli.py scan --mod-root "C:\path\to\MyGunMod"
 ```
 
