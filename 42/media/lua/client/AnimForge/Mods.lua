@@ -50,6 +50,19 @@ local function activeModMap()
     return map
 end
 
+--- The mod that owns a script item. `item:getModID()` is the mod.info id the script loader recorded,
+--- and it is reliable across every load layout (Steam on/off, ~/Zomboid/mods, Workshop staging). The
+--- file path is NOT: depending on how a mod loads, getFileName() can be a media-relative path with no
+--- mod folder in it (e.g. "media/scripts/..."), so it is only a last-resort fallback here.
+---@param item Item
+---@return string|nil
+local function itemModKey(item)
+    local mid
+    pcall(function() mid = item:getModID() end)
+    if mid and mid ~= "" then return mid end
+    return modIdFromFileName(item:getFileName())
+end
+
 --- Active mods that own at least one ranged weapon, each with its sorted weapon fullTypes.
 --- Shape: { { id = "MyGunMod", name = "My Gun Mod", weapons = { "MyMod.M4CARBINE", ... } }, ... }
 ---@return table[]
@@ -62,8 +75,8 @@ function Mods.scanGunMods()
         for i = 0, items:size() - 1 do
             local item = items:get(i)
             if item and item:isRanged() then
-                local pathId = modIdFromFileName(item:getFileName())
-                local entry = pathId and activeMap[pathId:lower()]
+                local key = itemModKey(item)
+                local entry = key and activeMap[key:lower()]
                 if entry and not FRAMEWORK[entry.dir] and not FRAMEWORK[entry.id] then
                     local bucket = byMod[entry.dir]
                     if not bucket then
@@ -119,8 +132,8 @@ function Mods.attachmentsForGun(modId, gunFullType)
         for i = 0, items:size() - 1 do
             local item = items:get(i)
             if item then
-                local pathId = modIdFromFileName(item:getFileName())
-                local entry = pathId and activeMap[pathId:lower()]
+                local key = itemModKey(item)
+                local entry = key and activeMap[key:lower()]
                 if entry and entry.dir == modId then
                     local inst = instanceItem(item:getFullName())
                     if inst and instanceof(inst, "WeaponPart") then
@@ -201,8 +214,8 @@ function Mods.modItemInfos(modId)
         for i = 0, items:size() - 1 do
             local item = items:get(i)
             if item then
-                local pathId = modIdFromFileName(item:getFileName())
-                local entry = pathId and activeMap[pathId:lower()]
+                local key = itemModKey(item)
+                local entry = key and activeMap[key:lower()]
                 if entry and entry.dir == modId then
                     out[#out + 1] = { fullType = item:getFullName(), name = scriptName(item) }
                 end
