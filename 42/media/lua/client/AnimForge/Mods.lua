@@ -22,11 +22,13 @@ local function modIdFromFileName(fileName)
     return fileName:match("[/\\][Mm]ods[/\\]([^/\\]+)[/\\]")
 end
 
---- Map each active mod's FOLDER and its id (both lowercased) to a shared entry `{ dir, id, name }`.
---- Script file paths carry the mod's FOLDER, but getActivatedMods() returns the mod.info `id`, which
---- can differ (e.g. folder "GunsOfMarz" but id "MarzGuns"). Keying by both lets a path-derived folder
---- resolve to an active mod either way. `dir` is the folder the tool writes to (what the exporter
---- resolves under ~/Zomboid/mods); `name` is the display label; `id` is the mod.info id.
+--- Map each active mod's FOLDER name and its id (both lowercased) to a shared entry `{ dir, id, name }`.
+--- Script file paths carry the mod's FOLDER, but getActivatedMods() returns the mod.info `id`, which can
+--- differ (e.g. folder "GunsOfMarz" but id "MarzGuns"). getModInfoByID(id):getDir() gives that mod's
+--- location as a FULL path (e.g. C:\...\mods\GunsOfMarz), so we take its basename for the folder. Keying
+--- by both folder and id lets a path-derived folder resolve to an active mod either way. `dir` is the
+--- bare folder the tool writes to (what the exporter resolves under ~/Zomboid/mods); `name` is the
+--- display label; `id` is the mod.info id.
 ---@return table<string, table>
 local function activeModMap()
     local map = {}
@@ -35,14 +37,15 @@ local function activeModMap()
     for i = 0, am:size() - 1 do
         local id = am:get(i):gsub("^\\", "")
         local info = getModInfoByID(id)
-        local dir, name = id, nil
+        local folder, name = id, nil
         if info then
-            local d = info:getDir(); if d and d ~= "" then dir = d end
+            local d = info:getDir()                                   -- a FULL path, not the bare folder
+            if d and d ~= "" then folder = d:match("([^/\\]+)[/\\]*$") or d end
             local n = info:getName(); if n and n ~= "" then name = n end
         end
-        local entry = { dir = dir, id = id, name = name or dir }
-        map[dir:lower()] = entry
-        if id:lower() ~= dir:lower() then map[id:lower()] = entry end
+        local entry = { dir = folder, id = id, name = name or folder }
+        map[folder:lower()] = entry
+        if id:lower() ~= folder:lower() then map[id:lower()] = entry end
     end
     return map
 end
